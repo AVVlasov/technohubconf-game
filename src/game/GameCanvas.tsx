@@ -43,6 +43,7 @@ export const GameCanvas = forwardRef<GameControls, Props>(
       engine.setReduceMotion(reduceMotion)
       engine.setMuted(muted)
       engineRef.current = engine
+      ;(window as unknown as { __rush?: Engine }).__rush = engine // TEMP debug
 
       const doResize = () => {
         const rect = wrap.getBoundingClientRect()
@@ -59,6 +60,12 @@ export const GameCanvas = forwardRef<GameControls, Props>(
         else engine.resumeLoop()
       }
       document.addEventListener('visibilitychange', onVisibility)
+
+      // Разблокировка звука по первому жесту где угодно (autoplay policy)
+      const unlockAudio = () => engine.audio.unlock()
+      window.addEventListener('pointerdown', unlockAudio, { once: true })
+      window.addEventListener('keydown', unlockAudio, { once: true })
+      window.addEventListener('touchstart', unlockAudio, { once: true })
 
       const onKey = (e: KeyboardEvent) => {
         const eng = engineRef.current
@@ -77,6 +84,9 @@ export const GameCanvas = forwardRef<GameControls, Props>(
         ro.disconnect()
         document.removeEventListener('visibilitychange', onVisibility)
         window.removeEventListener('keydown', onKey)
+        window.removeEventListener('pointerdown', unlockAudio)
+        window.removeEventListener('keydown', unlockAudio)
+        window.removeEventListener('touchstart', unlockAudio)
         engine.stop()
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -114,6 +124,7 @@ export const GameCanvas = forwardRef<GameControls, Props>(
         style={{ position: 'absolute', inset: 0, touchAction: 'none', overflow: 'hidden' }}
         onPointerDown={(e) => {
           ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+          engineRef.current?.audio.unlock()
           dragging.current = true
           if (activeRef.current) {
             const p = toLocal(e.clientX, e.clientY)

@@ -1,7 +1,11 @@
-// WebAudio-синтез для шутера AI PDLC RUSH v2. Перенос из макета (Audio2). Без медиа-ассетов.
+// WebAudio-синтез для шутера AI PDLC RUSH v2. Без медиа-ассетов.
+// Надёжная разблокировка (autoplay policy) + мастер-громкость.
+
+const BOOST = 2.6 // общий множитель громкости относительно исходных уровней макета
 
 export class GameAudio {
   private ctx: AudioContext | null = null
+  private master: GainNode | null = null
   private muted = true
   private musicTimer: number | null = null
   private step = 0
@@ -12,35 +16,64 @@ export class GameAudio {
       const AC: typeof AudioContext | undefined =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-      if (AC) this.ctx = new AC()
+      if (AC) {
+        this.ctx = new AC()
+        this.master = this.ctx.createGain()
+        this.master.gain.value = 0.85
+        this.master.connect(this.ctx.destination)
+      }
     }
     return this.ctx
   }
 
-  resume(): void {
+  // Разблокировка звука по пользовательскому жесту (нужно для iOS/Chrome autoplay policy).
+  unlock(): void {
     const c = this.ensure()
-    if (c && c.state === 'suspended') void c.resume()
+    if (!c) return
+    if (c.state === 'suspended') void c.resume()
+    try {
+      // «немой» буфер разблокирует аудио на iOS Safari
+      const b = c.createBuffer(1, 1, 22050)
+      const s = c.createBufferSource()
+      s.buffer = b
+      s.connect(c.destination)
+      s.start(0)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  resume(): void {
+    this.unlock()
   }
 
   setMuted(m: boolean): void {
     this.muted = m
+    if (!m) this.unlock()
+  }
+
+  isMuted(): boolean {
+    return this.muted
   }
 
   private beep(freq: number, dur: number, type: OscillatorType, vol?: number, slide?: number): void {
     if (this.muted) return
     const c = this.ensure()
-    if (!c) return
+    if (!c || !this.master) return
+    if (c.state === 'suspended') void c.resume()
+    const t = c.currentTime
     const o = c.createOscillator()
     const g = c.createGain()
     o.type = type || 'square'
-    o.frequency.setValueAtTime(freq, c.currentTime)
-    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), c.currentTime + dur)
-    g.gain.setValueAtTime(vol || 0.05, c.currentTime)
-    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur)
+    o.frequency.setValueAtTime(freq, t)
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur)
+    const v = (vol || 0.05) * BOOST
+    g.gain.setValueAtTime(v, t)
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur)
     o.connect(g)
-    g.connect(c.destination)
-    o.start()
-    o.stop(c.currentTime + dur)
+    g.connect(this.master)
+    o.start(t)
+    o.stop(t + dur)
   }
 
   shot(): void {
