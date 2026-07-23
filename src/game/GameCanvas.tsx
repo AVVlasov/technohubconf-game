@@ -43,7 +43,6 @@ export const GameCanvas = forwardRef<GameControls, Props>(
       engine.setReduceMotion(reduceMotion)
       engine.setMuted(muted)
       engineRef.current = engine
-      ;(window as unknown as { __rush?: Engine }).__rush = engine // TEMP debug
 
       const doResize = () => {
         const rect = wrap.getBoundingClientRect()

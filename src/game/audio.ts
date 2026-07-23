@@ -1,7 +1,7 @@
 // WebAudio-синтез для шутера AI PDLC RUSH v2. Без медиа-ассетов.
 // Надёжная разблокировка (autoplay policy) + мастер-громкость.
 
-const BOOST = 2.6 // общий множитель громкости относительно исходных уровней макета
+const BOOST = 3.2 // общий множитель громкости относительно исходных уровней макета
 
 export class GameAudio {
   private ctx: AudioContext | null = null
@@ -19,7 +19,7 @@ export class GameAudio {
       if (AC) {
         this.ctx = new AC()
         this.master = this.ctx.createGain()
-        this.master.gain.value = 0.85
+        this.master.gain.value = 0.95
         this.master.connect(this.ctx.destination)
       }
     }
