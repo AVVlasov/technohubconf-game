@@ -49,11 +49,8 @@ export const MainPage: React.FC = () => {
   const [settings, setSettings] = useState(getSettings())
   const [muted, setMuted] = useState(getSettings().muted)
   const [count, setCount] = useState(3)
-  const [showLb, setShowLb] = useState(false)
-  const [daily, setDaily] = useState(false)
   const [lastRank, setLastRank] = useState(-1)
   const [nameInput, setNameInput] = useState(settings.name)
-  const [leaderboard, setLeaderboard] = useState<ScoreEntry[]>(getLeaderboard())
   const [displayScore, setDisplayScore] = useState(0)
   const [shareBusy, setShareBusy] = useState(false)
   const savedRef = useRef(false)
@@ -85,7 +82,6 @@ export const MainPage: React.FC = () => {
     const name = (getSettings().name || 'Гость').slice(0, 14)
     const entry: ScoreEntry = { name, score: r.score, zone: r.stageName, date: Date.now() }
     const rank = addScore(entry)
-    setLeaderboard(getLeaderboard())
     setLastRank(rank)
     setResult(r)
     setScreen('gameover')
@@ -102,9 +98,8 @@ export const MainPage: React.FC = () => {
 
   useEffect(() => () => cancelAnimationFrame(scoreRaf.current), [])
 
-  const beginCountdown = useCallback((d: boolean) => {
+  const beginCountdown = useCallback(() => {
     controls.current?.resumeAudio()
-    setDaily(d)
     savedRef.current = false
     setResult(null)
     setCount(3)
@@ -126,9 +121,7 @@ export const MainPage: React.FC = () => {
         controls.current?.countdownTick(true)
       } else {
         clearInterval(id)
-        const seed = daily
-          ? Number(new Date().toISOString().slice(0, 10).replace(/-/g, ''))
-          : Math.floor(Math.random() * 1e9)
+        const seed = Math.floor(Math.random() * 1e9)
         setScreen('playing')
         controls.current?.start(seed)
       }
@@ -137,20 +130,15 @@ export const MainPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen])
 
-  const onPlay = useCallback(
-    (d: boolean) => {
-      if (!getSettings().tutorialSeen) {
-        setDaily(d)
-        setScreen('tutorial')
-      } else beginCountdown(d)
-    },
-    [beginCountdown],
-  )
+  const onPlay = useCallback(() => {
+    if (!getSettings().tutorialSeen) setScreen('tutorial')
+    else beginCountdown()
+  }, [beginCountdown])
 
   const finishTutorial = useCallback(() => {
     setSettings(saveSettings({ tutorialSeen: true }))
-    beginCountdown(daily)
-  }, [beginCountdown, daily])
+    beginCountdown()
+  }, [beginCountdown])
 
   const toggleMute = useCallback(() => {
     const m = !getSettings().muted
@@ -198,11 +186,6 @@ export const MainPage: React.FC = () => {
       setShareBusy(false)
     }
   }, [result, shareBusy, lastRank])
-
-  const openLb = useCallback(() => {
-    setLeaderboard(getLeaderboard())
-    setShowLb(true)
-  }, [])
 
   const top3Delta = useMemo(() => {
     if (!result) return null
@@ -254,9 +237,7 @@ export const MainPage: React.FC = () => {
             best={best}
             name={nameInput}
             onName={commitName}
-            onPlay={() => onPlay(false)}
-            onDaily={() => onPlay(true)}
-            onLb={openLb}
+            onPlay={onPlay}
             muted={muted}
             onMute={toggleMute}
             reduceMotion={settings.reduceMotion}
@@ -274,19 +255,15 @@ export const MainPage: React.FC = () => {
             rank={lastRank}
             displayScore={displayScore}
             top3Delta={top3Delta}
-            onRetry={() => beginCountdown(daily)}
+            onRetry={beginCountdown}
             onMenu={() => {
               setScreen('menu')
               controls.current?.renderStatic()
             }}
             onShare={doShare}
             shareBusy={shareBusy}
-            onLb={openLb}
-            daily={daily}
           />
         )}
-
-        {showLb && <Leaderboard entries={leaderboard} onClose={() => setShowLb(false)} />}
       </div>
     </div>
   )
@@ -430,14 +407,12 @@ interface MenuProps {
   name: string
   onName: (v: string) => void
   onPlay: () => void
-  onDaily: () => void
-  onLb: () => void
   muted: boolean
   onMute: () => void
   reduceMotion: boolean
   onMotion: () => void
 }
-const Menu: React.FC<MenuProps> = ({ best, name, onName, onPlay, onDaily, onLb, muted, onMute, reduceMotion, onMotion }) => (
+const Menu: React.FC<MenuProps> = ({ best, name, onName, onPlay, muted, onMute, reduceMotion, onMotion }) => (
   <div style={{ position: 'absolute', inset: 0, zIndex: 10, display: 'flex', flexDirection: 'column', background: 'linear-gradient(168deg, rgba(8,42,46,0.94) 0%, rgba(7,26,32,0.95) 38%, rgba(6,18,23,0.97) 100%)' }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '18px 20px 0' }}>
       <Dots color={C.ink} />
@@ -455,7 +430,7 @@ const Menu: React.FC<MenuProps> = ({ best, name, onName, onPlay, onDaily, onLb, 
         Прокачай агента от 8K контекста до Dark Factory. Сбивай болезни агентов, собирай токены и харнес.
       </div>
       <div style={{ width: '100%', maxWidth: 320, marginTop: 18, textAlign: 'left' }}>
-        <label style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'rgba(230,242,238,0.62)' }}>НИК ДЛЯ ЛИДЕРБОРДА</label>
+        <label style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'rgba(230,242,238,0.62)' }}>ТВОЙ НИК</label>
         <input
           value={name}
           onChange={(e) => onName(e.target.value)}
@@ -465,10 +440,6 @@ const Menu: React.FC<MenuProps> = ({ best, name, onName, onPlay, onDaily, onLb, 
         />
       </div>
       <PrimaryButton onClick={onPlay} label="Играть" />
-      <div style={{ display: 'flex', gap: 10, width: '100%', maxWidth: 320, marginTop: 10 }}>
-        <GhostButton onClick={onDaily} label="Забег дня" />
-        <GhostButton onClick={onLb} label="Лидерборд" />
-      </div>
       <div style={{ marginTop: 14, fontSize: 13, fontWeight: 600, color: 'rgba(230,242,238,0.62)' }}>
         Рекорд <span style={{ color: C.bright, fontWeight: 800 }}>{fmt(best)}</span>
       </div>
@@ -541,10 +512,8 @@ interface GameOverProps {
   onMenu: () => void
   onShare: () => void
   shareBusy: boolean
-  onLb: () => void
-  daily: boolean
 }
-const GameOver: React.FC<GameOverProps> = ({ result, best, rank, displayScore, top3Delta, onRetry, onMenu, onShare, shareBusy, onLb }) => {
+const GameOver: React.FC<GameOverProps> = ({ result, best, rank, displayScore, top3Delta, onRetry, onMenu, onShare, shareBusy }) => {
   const isRecord = result.score >= best && result.score > 0
   const tally: Array<{ k: string; v: string; c: string }> = [
     { k: 'Очки за забег', v: fmt(result.base), c: C.ink },
@@ -598,7 +567,6 @@ const GameOver: React.FC<GameOverProps> = ({ result, best, rank, displayScore, t
         <PrimaryButton onClick={onRetry} label="Ещё разок" full />
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <GhostButton onClick={onShare} label={shareBusy ? '…' : 'Поделиться'} />
-          <GhostButton onClick={onLb} label="Топ" />
           <GhostButton onClick={onMenu} label="Меню" />
         </div>
       </div>
@@ -616,34 +584,6 @@ const ResultStat: React.FC<{ icon: string; label: string; value: string }> = ({ 
     <div>
       <div style={{ fontSize: 11.5, fontWeight: 700, color: 'rgba(230,242,238,0.55)' }}>{label}</div>
       <div style={{ fontSize: 16, fontWeight: 800 }}>{value}</div>
-    </div>
-  </div>
-)
-
-// ---------- Leaderboard ----------
-const Leaderboard: React.FC<{ entries: ScoreEntry[]; onClose: () => void }> = ({ entries, onClose }) => (
-  <div style={{ position: 'absolute', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(4,12,16,0.9)', padding: 20 }}>
-    <div style={{ width: '100%', maxWidth: 340 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <h2 style={{ margin: 0, fontFamily: TITLE_FONT, fontSize: 20, fontWeight: 700 }}>Лидерборд</h2>
-        <button onClick={onClose} className="aip-btn" style={{ width: 38, height: 38, borderRadius: '50%', border: '1.5px solid rgba(230,242,238,0.28)', background: 'transparent', color: C.ink, fontSize: 16, fontWeight: 700, cursor: 'pointer', fontFamily: FONT }}>✕</button>
-      </div>
-      {entries.length === 0 ? (
-        <div style={{ color: 'rgba(230,242,238,0.62)', textAlign: 'center', padding: '36px 10px', fontSize: 14.5, fontWeight: 600 }}>Пока пусто. Стань первым.</div>
-      ) : (
-        <div className="aip-scroll" style={{ maxHeight: '60vh', overflowY: 'auto', display: 'grid', gap: 6 }}>
-          {entries.map((e, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 14px', borderRadius: 14, background: i < 3 ? 'rgba(33,160,56,0.12)' : 'rgba(230,242,238,0.05)', border: `1px solid ${i < 3 ? 'rgba(59,210,105,0.45)' : 'rgba(230,242,238,0.1)'}` }}>
-              <div style={{ width: 26, height: 26, flexShrink: 0, borderRadius: '50%', background: i < 3 ? C.green : 'rgba(230,242,238,0.1)', color: i < 3 ? '#FFFFFF' : 'rgba(230,242,238,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800 }}>{i + 1}</div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 700, fontSize: 14.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.name}</div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(230,242,238,0.55)' }}>{e.zone}</div>
-              </div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: C.bright, fontVariantNumeric: 'tabular-nums' }}>{fmt(e.score)}</div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   </div>
 )

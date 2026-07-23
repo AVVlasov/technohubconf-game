@@ -79,6 +79,12 @@ export class GameAudio {
   shot(): void {
     this.beep(720, 0.04, 'square', 0.018, -300)
   }
+  eShot(): void {
+    this.beep(340, 0.05, 'square', 0.014, -120)
+  }
+  boom(): void {
+    this.beep(90, 0.3, 'sawtooth', 0.07, -50)
+  }
   kill(): void {
     this.beep(300, 0.12, 'sawtooth', 0.04, -140)
   }

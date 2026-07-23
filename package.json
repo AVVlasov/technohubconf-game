@@ -4,7 +4,8 @@
     "description": "",
     "main": "./src/index.tsx",
     "scripts": {
-        "test": "exit 0",
+        "test": "vitest run",
+        "test:watch": "vitest",
         "start": "brojs server --port=8099 --with-open-browser",
         "build": "npm run clean && brojs build --dev",
         "build:prod": "npm run clean && brojs build",
@@ -43,5 +44,8 @@
         "react-dom": "^18.3.1",
         "react-router-dom": "^6.23.1",
         "typescript-eslint": "^8.6.0"
+    },
+    "devDependencies": {
+        "vitest": "^3.2.7"
     }
 }

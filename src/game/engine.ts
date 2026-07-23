@@ -3,6 +3,22 @@
 // Боссы-«болезни агента», сбор харнеса → Dark Factory ×2, апгрейды AGENT.MD/SKILL.MD/SUBAGENT, перки.
 
 import { GameAudio } from './audio'
+import {
+  BARREL_KILL_CHANCE,
+  BARREL_REFILL_PCT,
+  STAGE_CLEAR_REFILL_PCT,
+  WAVE_DURATION,
+  bossHp,
+  bossShootCd,
+  enemyHp,
+  enemyMixChance,
+  fireRate as balanceFireRate,
+  spawnInterval as balanceSpawnInterval,
+  stageDropPlan,
+  subDamage,
+  subFireRate,
+  type PowerState,
+} from './balance'
 import { mulberry32, RNG } from './rng'
 import { C, CAP_STEPS, capLabel, drawMap, ENEMY_DEF, fmtInt, HARNESS, MAPS, STAGES, Stage } from './sprites'
 
@@ -68,6 +84,19 @@ interface Enemy {
   baseX: number
   flash: number
   small: boolean
+  age: number
+  shootAcc: number
+  muzzle: number
+  dir?: number
+  turnT?: number
+  tpT?: number
+  cy?: number
+  rad?: number
+  winT?: number
+  gunSide?: number
+  burst?: number
+  burstT?: number
+  spN?: number
 }
 interface Bullet {
   x: number
@@ -78,11 +107,18 @@ interface Bullet {
   sub?: boolean
   dead?: boolean
 }
+type OrbType = 'orb' | 'big' | 'homing' | 'bomb' | 'frag'
 interface Orb {
   x: number
   y: number
   vx: number
   vy: number
+  type: OrbType
+  hp?: number
+  life?: number
+  turn?: number
+  timer?: number
+  dead?: boolean
 }
 interface Pickup {
   kind: string
@@ -110,6 +146,12 @@ interface FloatText {
   vy: number
   scale: number
 }
+interface BossQueue {
+  kind: string
+  n: number
+  t: number
+  gap: number
+}
 interface Boss {
   x: number
   y: number
@@ -120,6 +162,10 @@ interface Boss {
   shootAcc: number
   minionAcc: number
   flash: number
+  bq: BossQueue | null
+  alt: boolean
+  muzzle: number
+  sa?: number
 }
 interface DropItem {
   t: number
@@ -191,6 +237,7 @@ export class Engine {
   private lowTokT = 0
   private intro: IntroCard | null = null
   private distance = 0
+  private spawnN = 0
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas
@@ -242,6 +289,7 @@ export class Engine {
     this.lowTokT = 0
     this.intro = null
     this.distance = 0
+    this.spawnN = 0
   }
 
   setBest(b: number): void {
@@ -316,6 +364,15 @@ export class Engine {
     if (this.state === 'playing' && !this.raf) this.loop(performance.now())
   }
 
+  private power(): PowerState {
+    return {
+      agentLvl: this.agentLvl,
+      skillLvl: this.skillLvl,
+      subs: this.subs,
+      darkFactory: this.darkFactory,
+    }
+  }
+
   private startStage(idx: number, lap: number): void {
     this.stageIdx = idx
     this.lap = lap
@@ -323,6 +380,7 @@ export class Engine {
     this.phase = 'intro'
     this.phaseT = 2.6
     this.waveT = 0
+    this.spawnAcc = 0
     this.intro = {
       kind: 'stage',
       title: this.stage.enemyName,
@@ -330,14 +388,7 @@ export class Engine {
       legend: this.stage.legend,
       sprite: this.stage.enemy,
     }
-    this.dropQueue = [
-      { t: 4, kind: 'doc_agent' },
-      { t: 8, kind: 'barrel' },
-      { t: 12, kind: 'doc_skill' },
-      { t: 16, kind: 'barrel' },
-      { t: 20, kind: this.rng() < 0.5 ? 'perk_zip' : 'perk_win' },
-    ]
-    if (idx === 1 || idx === 3 || lap > 0) this.dropQueue.push({ t: 14, kind: 'mini' })
+    this.dropQueue = stageDropPlan(idx, this.power()).map((d) => ({ ...d }))
     this.audio.stage()
     this.emitStats()
   }
@@ -355,6 +406,10 @@ export class Engine {
 
   private diff(): number {
     return Math.min(1, this.stageIdx / 5 + this.time / 240)
+  }
+  /** доп. давление на «прод» / поздних этапах */
+  private hell(): number {
+    return Math.min(1, Math.max(0, (this.stageIdx - 2) / 3) + this.lap * 0.3)
   }
   private cap(): number {
     return CAP_STEPS[this.capLevel]
@@ -374,16 +429,16 @@ export class Engine {
       if (this.comboT <= 0) this.combo = 0
     }
 
-    // движение игрока
     const lerp = 1 - Math.pow(0.0004, dt)
     this.px2 += (this.tx - this.px2) * lerp
     this.py2 += (this.ty - this.py2) * lerp
 
-    // расход токенов
-    let burn = 130 * (1 + this.stageIdx * 0.09 + this.lap * 0.4) * Math.pow(0.85, this.skillLvl)
+    const hell = this.hell()
+    let burn =
+      160 * (1 + this.stageIdx * 0.1 + hell * 0.45 + this.lap * 0.4) * Math.pow(0.85, this.skillLvl)
     if (this.compressT > 0) burn *= 0.55
     let aura = false
-    if (this.stage.enemy === 'rot') {
+    if (this.stage.enemy === 'rot' || this.enemies.some((e) => e.kind === 'rot')) {
       for (const e of this.enemies) {
         if (e.kind === 'rot' && Math.hypot(e.x - this.px2, e.y - this.py2) < 110 * this.unit) {
           aura = true
@@ -410,18 +465,19 @@ export class Engine {
       return
     }
 
-    // стрельба
-    const fireRate = this.agentLvl >= 3 ? 5 : 4
+    const power = this.power()
+    const fireRate = balanceFireRate(power)
     this.fireAcc += dt
-    const shotCost = 10 * Math.pow(0.88, this.skillLvl)
+    const shotCost = 12 * Math.pow(0.88, this.skillLvl)
     if (this.fireAcc >= 1 / fireRate) {
       this.fireAcc = 0
       this.fire(this.px2, this.py2 - 26 * this.unit, this.agentLvl)
       this.tokens = Math.max(1, this.tokens - shotCost)
     }
     if (this.subs > 0 || this.darkFactory) {
+      const subRate = subFireRate(power)
       this.subFireAcc += dt
-      if (this.subFireAcc >= 0.5) {
+      if (subRate > 0 && this.subFireAcc >= 1 / subRate) {
         this.subFireAcc = 0
         const offs: number[] = []
         if (this.subs >= 1) offs.push(-38)
@@ -430,13 +486,25 @@ export class Engine {
           offs.push(-64)
           offs.push(64)
         }
-        for (const o of offs)
-          this.bullets.push({ x: this.px2 + o * this.unit, y: this.py2 - 8 * this.unit, vy: -460 * this.unit, dmg: 1, sub: true })
+        const subDmg = subDamage(power)
+        const subSpd = -(420 + this.agentLvl * 40 + this.skillLvl * 30) * this.unit
+        for (const o of offs) {
+          this.bullets.push({ x: this.px2 + o * this.unit, y: this.py2 - 8 * this.unit, vy: subSpd, dmg: subDmg, sub: true })
+          if (this.agentLvl >= 3) {
+            this.bullets.push({
+              x: this.px2 + o * this.unit,
+              y: this.py2 - 4 * this.unit,
+              vy: subSpd * 0.92,
+              dmg: Math.max(1, subDmg - 1),
+              vx: (o < 0 ? -45 : 45) * this.unit,
+              sub: true,
+            })
+          }
+        }
         this.audio.shot()
       }
     }
 
-    // фазы этапа
     this.phaseT = Math.max(0, this.phaseT - dt)
     if (this.phase === 'intro' && this.phaseT <= 0) {
       this.phase = 'wave'
@@ -445,10 +513,15 @@ export class Engine {
     } else if (this.phase === 'wave') {
       this.waveT += dt
       this.spawnAcc += dt
-      const interval = Math.max(0.35, 1.3 - this.diff() * 0.6 - this.stageIdx * 0.09)
+      const waveProgress = Math.min(1, this.waveT / WAVE_DURATION)
+      const interval = balanceSpawnInterval(this.stageIdx, waveProgress)
       if (this.spawnAcc >= interval) {
         this.spawnAcc -= interval
         this.spawnEnemy()
+        // на пике давления поздних этапов — доп. враг
+        if (this.stageIdx >= 2 && waveProgress > 0.4 && waveProgress < 0.7 && this.rng() < 0.25 + this.stageIdx * 0.05) {
+          this.spawnEnemy()
+        }
       }
       for (const d of this.dropQueue) {
         if (!d.done && this.waveT >= d.t) {
@@ -456,7 +529,7 @@ export class Engine {
           this.spawnPickup(d.kind)
         }
       }
-      if (this.waveT >= 24) this.startBoss()
+      if (this.waveT >= WAVE_DURATION) this.startBoss()
     } else if (this.phase === 'clear' && this.phaseT <= 0) {
       this.startStage(this.stageIdx + 1, 0)
     }
@@ -475,36 +548,65 @@ export class Engine {
   }
 
   private fire(x: number, y: number, lvl: number): void {
-    const v = -560 * this.unit
-    if (lvl <= 1) this.bullets.push({ x, y, vy: v, dmg: 1 })
+    const v = -(540 + this.skillLvl * 35) * this.unit
+    const bonus = this.skillLvl >= 3 ? 1 : 0
+    if (lvl <= 1) this.bullets.push({ x, y, vy: v, dmg: 1 + bonus })
     else if (lvl === 2) {
-      this.bullets.push({ x: x - 8 * this.unit, y, vy: v, dmg: 1 })
-      this.bullets.push({ x: x + 8 * this.unit, y, vy: v, dmg: 1 })
+      this.bullets.push({ x: x - 9 * this.unit, y, vy: v, dmg: 1 + bonus })
+      this.bullets.push({ x: x + 9 * this.unit, y, vy: v, dmg: 1 + bonus })
     } else {
-      this.bullets.push({ x: x - 10 * this.unit, y, vy: v, dmg: 1, vx: -60 * this.unit })
-      this.bullets.push({ x, y, vy: v, dmg: 2 })
-      this.bullets.push({ x: x + 10 * this.unit, y, vy: v, dmg: 1, vx: 60 * this.unit })
+      this.bullets.push({ x: x - 12 * this.unit, y: y + 6 * this.unit, vy: v, dmg: 1 + bonus, vx: -70 * this.unit })
+      this.bullets.push({ x, y: y - 4 * this.unit, vy: v * 1.05, dmg: 2 + bonus })
+      this.bullets.push({ x: x + 12 * this.unit, y: y + 6 * this.unit, vy: v, dmg: 1 + bonus, vx: 70 * this.unit })
+      if (this.skillLvl >= 2) {
+        this.bullets.push({ x: x - 18 * this.unit, y: y + 10 * this.unit, vy: v * 0.9, dmg: 1, vx: -110 * this.unit })
+        this.bullets.push({ x: x + 18 * this.unit, y: y + 10 * this.unit, vy: v * 0.9, dmg: 1, vx: 110 * this.unit })
+      }
     }
     this.audio.shot()
   }
 
   private spawnEnemy(): void {
-    const kind = this.stage.enemy
+    let kind = this.stage.enemy
+    const mixChance = enemyMixChance(this.stageIdx)
+    if (mixChance > 0 && this.rng() < mixChance) {
+      const pool = STAGES.slice(0, this.stageIdx).map((s) => s.enemy)
+      kind = pool[Math.floor(this.rng() * pool.length)]
+    }
     const def = ENEMY_DEF[kind]
-    const x = 30 + this.rng() * (this.W - 60)
-    const hp = def.hp + Math.floor(this.stageIdx / 2)
-    this.enemies.push({
+    this.spawnN++
+    const x = 30 + ((this.spawnN % 5) / 5 + this.rng() * 0.18) * (this.W - 60)
+    const hp = enemyHp(def.hp, this.stageIdx)
+    const e: Enemy = {
       kind,
       x,
       y: -40 * this.unit,
       hp,
       maxHp: hp,
-      vy: def.vy * this.unit * (0.9 + this.rng() * 0.3) * (1 + this.stageIdx * 0.12 + this.diff() * 0.4),
+      vy: def.vy * this.unit * (0.9 + this.rng() * 0.3) * (1 + this.stageIdx * 0.1 + this.diff() * 0.25),
       phase: this.rng() * Math.PI * 2,
       baseX: x,
       flash: 0,
       small: false,
-    })
+      age: 0,
+      shootAcc: this.rng() * 1.2,
+      muzzle: 0,
+    }
+    if (kind === 'olddev') {
+      e.dir = this.rng() < 0.5 ? -1 : 1
+      e.turnT = 0.7 + this.rng() * 0.8
+    }
+    if (kind === 'legacy') {
+      e.dir = this.rng() < 0.5 ? -1 : 1
+      e.winT = this.rng() * 3
+      e.gunSide = 1
+    }
+    if (kind === 'hallu') e.tpT = 0.45 + this.rng() * 0.7
+    if (kind === 'loop') {
+      e.cy = e.y
+      e.rad = (30 + this.rng() * 22) * this.unit
+    }
+    this.enemies.push(e)
   }
 
   private spawnPickup(kind: string, x?: number, y?: number): void {
@@ -519,8 +621,21 @@ export class Engine {
   private startBoss(): void {
     this.phase = 'boss'
     this.enemies = this.enemies.filter((e) => e.y < this.H * 0.5)
-    const hp = 30 + this.stageIdx * 14 + (this.stageIdx === 5 ? 22 : 0)
-    this.boss = { x: this.W / 2, y: -80 * this.unit, ty: this.H * 0.2, hp, maxHp: hp, phase: 0, shootAcc: 0, minionAcc: 0, flash: 0 }
+    const hp = bossHp(this.stageIdx)
+    this.boss = {
+      x: this.W / 2,
+      y: -80 * this.unit,
+      ty: this.H * 0.2,
+      hp,
+      maxHp: hp,
+      phase: 0,
+      shootAcc: 0,
+      minionAcc: 0,
+      flash: 0,
+      bq: null,
+      alt: false,
+      muzzle: 0,
+    }
     this.intro = {
       kind: 'boss',
       title: this.stage.boss,
@@ -533,58 +648,324 @@ export class Engine {
     this.emitStats()
   }
 
+  private spawnOrb(x: number, y: number, vx: number, vy: number, type: OrbType = 'orb', extra?: Partial<Orb>): void {
+    if (this.orbs.length > 90) return
+    const o: Orb = { x, y, vx, vy, type }
+    if (extra) Object.assign(o, extra)
+    this.orbs.push(o)
+  }
+
+  private aimAng(x: number, y: number): number {
+    return Math.atan2(this.py2 - y, this.px2 - x)
+  }
+
+  private enemyShoot(e: Enemy, dt: number): void {
+    if (e.y < 26 * this.unit || e.y > this.H * 0.74) return
+    const u = this.unit
+    const hell = this.hell()
+    const m = Math.max(0.32, 1 - this.stageIdx * 0.09 - this.lap * 0.2 - hell * 0.22)
+    const speedUp = 1 + this.stageIdx * 0.1 + this.diff() * 0.18 + hell * 0.25
+
+    if (e.kind === 'olddev') {
+      if ((e.burst || 0) > 0) {
+        e.burstT = (e.burstT || 0) - dt
+        if ((e.burstT || 0) <= 0) {
+          e.burstT = 0.12
+          e.burst = (e.burst || 1) - 1
+          const a = this.aimAng(e.x, e.y)
+          this.spawnOrb(e.x, e.y + 14 * u, Math.cos(a) * 220 * u * speedUp, Math.sin(a) * 220 * u * speedUp)
+          e.muzzle = 0.08
+          this.audio.eShot()
+        }
+      } else {
+        e.shootAcc += dt
+        if (e.shootAcc > 2.35 * m) {
+          e.shootAcc = 0
+          e.burst = hell > 0.6 ? 4 : 3
+          e.burstT = 0
+        }
+      }
+    } else if (e.kind === 'slop') {
+      e.shootAcc += dt
+      if (e.shootAcc > 2.7 * m) {
+        e.shootAcc = 0
+        const a = this.aimAng(e.x, e.y) + (this.rng() - 0.5) * 0.22
+        this.spawnOrb(e.x, e.y + 12 * u, Math.cos(a) * 125 * u * speedUp, Math.sin(a) * 125 * u * speedUp, 'big', { hp: 2 })
+        e.muzzle = 0.1
+        this.audio.eShot()
+      }
+    } else if (e.kind === 'legacy') {
+      e.winT = (e.winT || 0) + dt
+      const windowOpen = (e.winT % Math.max(2.2, 3 - hell)) < 1.2 + hell * 0.35
+      if (windowOpen) {
+        e.shootAcc += dt
+        if (e.shootAcc > 0.15) {
+          e.shootAcc = 0
+          e.gunSide = -(e.gunSide || 1)
+          const a = Math.max(Math.PI * 0.28, Math.min(Math.PI * 0.72, this.aimAng(e.x, e.y)))
+          this.spawnOrb(
+            e.x + (e.gunSide || 1) * 14 * u,
+            e.y + 16 * u,
+            Math.cos(a) * 215 * u * speedUp,
+            Math.sin(a) * 215 * u * speedUp,
+          )
+          e.muzzle = 0.06
+          this.audio.eShot()
+        }
+      }
+    } else if (e.kind === 'hallu') {
+      e.shootAcc += dt
+      if (e.shootAcc > 1.85 * m && Math.floor(e.phase * 2) % 2 === 0) {
+        e.shootAcc = 0
+        const a = this.aimAng(e.x, e.y)
+        this.spawnOrb(e.x, e.y + 10 * u, Math.cos(a) * 155 * u * speedUp, Math.sin(a) * 155 * u * speedUp, 'homing', {
+          life: 3.8,
+          turn: 2.4 + hell * 1.4,
+        })
+        e.muzzle = 0.1
+        this.audio.eShot()
+      }
+    } else if (e.kind === 'loop') {
+      e.shootAcc += dt
+      if (e.shootAcc > 0.48 * m) {
+        e.shootAcc = 0
+        e.spN = (e.spN || 0) + 1
+        if (e.spN % 3 === 0) {
+          const a = this.aimAng(e.x, e.y)
+          this.spawnOrb(e.x, e.y, Math.cos(a) * 170 * u * speedUp, Math.sin(a) * 170 * u * speedUp)
+        } else {
+          const a = e.phase * 1.6
+          this.spawnOrb(e.x + Math.cos(a) * 18 * u, e.y + Math.sin(a) * 18 * u, Math.cos(a) * 145 * u, Math.sin(a) * 145 * u)
+        }
+        e.muzzle = 0.06
+      }
+    } else if (e.kind === 'rot') {
+      e.shootAcc += dt
+      if (e.shootAcc > 2.7 * m) {
+        e.shootAcc = 0
+        const vx = Math.max(-110, Math.min(110, (this.px2 - e.x) * 0.55)) * u
+        this.spawnOrb(e.x, e.y + 14 * u, vx, 135 * u, 'bomb', { timer: 1.45 - hell * 0.25, hp: 1 })
+        e.muzzle = 0.1
+        this.audio.eShot()
+        if (hell > 0.5 && this.rng() < 0.45) {
+          const a = this.aimAng(e.x, e.y)
+          this.spawnOrb(e.x, e.y + 10 * u, Math.cos(a) * 160 * u * speedUp, Math.sin(a) * 160 * u * speedUp)
+        }
+      }
+    }
+  }
+
+  private explodeBomb(o: Orb): void {
+    const u = this.unit
+    this.burst(o.x, o.y, C.orange, 18)
+    this.shake = Math.max(this.shake, 5 * u)
+    this.audio.boom()
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + 0.39
+      this.spawnOrb(o.x, o.y, Math.cos(a) * 155 * u, Math.sin(a) * 155 * u, 'frag')
+    }
+    if (this.invincT <= 0 && Math.hypot(o.x - this.px2, o.y - this.py2) < 80 * u) this.hurt()
+  }
+
   private updateEntities(dt: number): void {
+    const u = this.unit
+    const hell = this.hell()
     for (const b of this.bullets) {
       b.y += b.vy * dt
       if (b.vx) b.x += b.vx * dt
     }
     this.bullets = this.bullets.filter((b) => b.y > -30)
+
     for (const o of this.orbs) {
+      if (o.type === 'homing') {
+        o.life = (o.life || 0) - dt
+        if ((o.life || 0) <= 0) {
+          o.dead = true
+          continue
+        }
+        const want = this.aimAng(o.x, o.y)
+        let cur = Math.atan2(o.vy, o.vx)
+        let d = want - cur
+        while (d > Math.PI) d -= Math.PI * 2
+        while (d < -Math.PI) d += Math.PI * 2
+        const turn = ((o.life || 0) > 0.9 ? o.turn || 2 : 0) * dt
+        cur += Math.max(-turn, Math.min(turn, d))
+        const sp = Math.hypot(o.vx, o.vy)
+        o.vx = Math.cos(cur) * sp
+        o.vy = Math.sin(cur) * sp
+      } else if (o.type === 'bomb') {
+        o.vy += (28 * u - o.vy) * Math.min(1, 3 * dt)
+        o.vx *= Math.pow(0.1, dt)
+        o.timer = (o.timer || 0) - dt
+        if ((o.timer || 0) <= 0) {
+          o.dead = true
+          this.explodeBomb(o)
+          continue
+        }
+      }
       o.x += o.vx * dt
       o.y += o.vy * dt
     }
-    this.orbs = this.orbs.filter((o) => o.y < this.H + 30 && o.x > -30 && o.x < this.W + 30)
+    this.orbs = this.orbs.filter((o) => !o.dead && o.y < this.H + 30 && o.y > -60 && o.x > -30 && o.x < this.W + 30)
+
     for (const e of this.enemies) {
       e.flash = Math.max(0, e.flash - dt)
+      e.muzzle = Math.max(0, e.muzzle - dt)
       e.phase += dt * 3
-      e.y += e.vy * dt
-      if (e.kind === 'slop') e.x = e.baseX + Math.sin(e.phase) * 26 * this.unit
-      else if (e.kind === 'hallu') e.x = e.baseX + Math.sin(e.phase * 1.6) * 48 * this.unit
-      else if (e.kind === 'loop') e.x = e.baseX + Math.cos(e.phase * 2) * 40 * this.unit
+      e.age += dt
+      const seek = 0.85 + hell * 0.7
+
+      if (e.kind === 'olddev') {
+        e.y += e.vy * dt
+        e.x += (e.dir || 1) * (52 + hell * 18) * u * dt
+        e.turnT = (e.turnT || 0) - dt
+        if (e.x < 26 || e.x > this.W - 26 || (e.turnT || 0) <= 0) {
+          e.dir = this.rng() < 0.75 + hell * 0.15 ? (this.px2 > e.x ? 1 : -1) : -(e.dir || 1)
+          e.turnT = Math.max(0.45, 0.85 - hell * 0.25) + this.rng() * 0.7
+        }
+      } else if (e.kind === 'slop') {
+        e.y += e.vy * dt * (e.y > this.H * 0.38 ? 1.55 + hell * 0.35 : 1)
+        if (e.y > this.H * 0.38 && !e.small) e.baseX += (this.px2 - e.baseX) * Math.min(1, 1.05 * seek * dt)
+        e.x = e.baseX + Math.sin(e.phase) * 26 * u
+      } else if (e.kind === 'legacy') {
+        e.y += e.vy * dt
+        e.x += (e.dir || 1) * (46 + hell * 16) * u * dt
+        if (e.x < 30 || e.x > this.W - 30) e.dir = this.px2 > e.x ? 1 : -1
+      } else if (e.kind === 'hallu') {
+        e.y += e.vy * dt
+        e.tpT = (e.tpT || 0) - dt
+        if ((e.tpT || 0) <= 0) {
+          e.tpT = Math.max(0.45, 0.75 - hell * 0.25) + this.rng() * 0.7
+          const toPlayer = (this.px2 - e.baseX) * (0.42 + hell * 0.25)
+          e.baseX = Math.max(30, Math.min(this.W - 30, e.baseX + toPlayer + (this.rng() - 0.5) * 200 * u))
+          this.burst(e.x, e.y, C.violet, 6)
+        }
+        e.x += (e.baseX - e.x) * Math.min(1, 11 * dt)
+      } else if (e.kind === 'loop') {
+        e.cy = (e.cy || e.y) + e.vy * dt
+        e.baseX += (this.px2 - e.baseX) * Math.min(1, 0.55 * seek * dt)
+        const rad = e.rad || 36 * u
+        e.x = e.baseX + Math.cos(e.phase * 1.1) * rad
+        e.y = (e.cy || e.y) + Math.sin(e.phase * 1.1) * rad * 0.55
+      } else if (e.kind === 'rot') {
+        e.y += e.vy * dt
+        e.baseX += (this.px2 - e.baseX) * Math.min(1, 0.7 * seek * dt)
+        e.x = e.baseX + Math.sin(e.phase * 0.7) * 34 * u
+        if (this.rng() < dt * 2)
+          this.particles.push({
+            x: e.x + (this.rng() - 0.5) * 20 * u,
+            y: e.y + 14 * u,
+            vx: 0,
+            vy: 40 * u,
+            life: 0.5,
+            maxLife: 0.5,
+            color: C.greenDark,
+            size: 2 * u,
+          })
+      } else {
+        e.y += e.vy * dt
+      }
+      this.enemyShoot(e, dt)
     }
     this.enemies = this.enemies.filter((e) => e.y < this.H + 60 && e.hp > 0)
+
     for (const p of this.pickups) p.y += p.vy * dt
     this.pickups = this.pickups.filter((p) => p.y < this.H + 40)
-    if (this.boss) {
-      const b = this.boss
-      b.flash = Math.max(0, b.flash - dt)
-      b.phase += dt
-      if (b.y < b.ty) b.y += 70 * this.unit * dt
-      else {
-        b.x = this.W / 2 + Math.sin(b.phase * 0.8) * this.W * 0.28
-        if (this.phaseT <= 0) {
-          b.shootAcc += dt
-          if (b.shootAcc > Math.max(0.75, 1.7 - this.diff() * 0.4 - this.stageIdx * 0.14)) {
-            b.shootAcc = 0
-            const ang = Math.atan2(this.py2 - b.y, this.px2 - b.x)
-            const n = this.stageIdx >= 3 ? 2 : 1
-            for (let i = -n; i <= n; i++) {
-              const a = ang + i * (n === 2 ? 0.17 : 0.22)
-              this.orbs.push({
-                x: b.x,
-                y: b.y + 20 * this.unit,
-                vx: Math.cos(a) * (170 + this.stageIdx * 14) * this.unit,
-                vy: Math.sin(a) * (170 + this.stageIdx * 14) * this.unit,
-              })
-            }
-          }
-          b.minionAcc += dt
-          if (b.minionAcc > Math.max(2.4, 4.5 - this.stageIdx * 0.4)) {
-            b.minionAcc = 0
-            this.spawnEnemy()
-            this.spawnEnemy()
+
+    if (this.boss) this.updateBoss(dt)
+  }
+
+  private updateBoss(dt: number): void {
+    const b = this.boss
+    if (!b) return
+    const u = this.unit
+    const hell = this.hell()
+    b.flash = Math.max(0, b.flash - dt)
+    b.muzzle = Math.max(0, b.muzzle - dt)
+    b.phase += dt
+    if (b.y < b.ty) {
+      b.y += 70 * u * dt
+      return
+    }
+    // боссы сильнее тянутся к игроку на поздних этапах
+    const sway = this.W * (0.28 + hell * 0.06)
+    const center = this.W / 2 + (this.px2 - this.W / 2) * (0.18 + hell * 0.22)
+    b.x = center + Math.sin(b.phase * (0.8 + hell * 0.35)) * sway
+    if (this.phaseT > 0) return
+    const si = this.stageIdx
+
+    if (b.bq) {
+      const q = b.bq
+      q.t -= dt
+      if (q.t <= 0) {
+        q.t = q.gap
+        q.n--
+        b.muzzle = 0.07
+        if (q.kind === 'burst') {
+          const a = this.aimAng(b.x, b.y)
+          this.spawnOrb(b.x, b.y + 24 * u, Math.cos(a) * 240 * u, Math.sin(a) * 240 * u)
+          this.audio.eShot()
+        } else if (q.kind === 'rain') {
+          const vx = (this.rng() - 0.5) * 180 * u
+          this.spawnOrb(b.x + (this.rng() - 0.5) * 70 * u, b.y + 24 * u, vx, 240 * u)
+        } else if (q.kind === 'spiral') {
+          b.sa = (b.sa || 0) + 0.42
+          for (let k = 0; k < 2; k++) {
+            const a = (b.sa || 0) + k * Math.PI
+            this.spawnOrb(b.x + Math.cos(a) * 30 * u, b.y + Math.sin(a) * 30 * u, Math.cos(a) * 155 * u, Math.sin(a) * 155 * u)
           }
         }
+        if (q.n <= 0) b.bq = null
+      }
+    } else {
+      b.shootAcc += dt
+      const cd = bossShootCd(si)
+      if (b.shootAcc > cd) {
+        b.shootAcc = 0
+        b.alt = !b.alt
+        if (b.alt) {
+          if (si === 0) b.bq = { kind: 'burst', n: 6, t: 0, gap: 0.12 }
+          else if (si === 1) {
+            const a = this.aimAng(b.x, b.y)
+            for (let i = -1; i <= 1; i++)
+              this.spawnOrb(b.x, b.y + 20 * u, Math.cos(a + i * 0.38) * 130 * u, Math.sin(a + i * 0.38) * 130 * u, 'big', { hp: 2 })
+            b.muzzle = 0.12
+            this.audio.eShot()
+          } else if (si === 2) b.bq = { kind: 'rain', n: 14, t: 0, gap: 0.08 }
+          else if (si === 3) {
+            const a = this.aimAng(b.x, b.y)
+            for (let i = -1; i <= 1; i += 2)
+              this.spawnOrb(b.x + i * 30 * u, b.y + 16 * u, Math.cos(a + i * 0.5) * 155 * u, Math.sin(a + i * 0.5) * 155 * u, 'homing', {
+                life: 3.6,
+                turn: 2.3 + hell,
+              })
+            b.muzzle = 0.12
+            this.audio.eShot()
+          } else if (si === 4) b.bq = { kind: 'spiral', n: 26, t: 0, gap: 0.08 }
+          else {
+            for (let i = -1; i <= 1; i += 2)
+              this.spawnOrb(b.x + i * 26 * u, b.y + 20 * u, i * 70 * u, 155 * u, 'bomb', { timer: 1.35, hp: 1 })
+            b.bq = { kind: 'burst', n: 4, t: 0.35, gap: 0.12 }
+            b.muzzle = 0.12
+            this.audio.eShot()
+          }
+        } else {
+          const ang = this.aimAng(b.x, b.y)
+          const n = si >= 3 ? 2 : 1
+          for (let i = -n; i <= n; i++) {
+            const a = ang + i * (n === 2 ? 0.16 : 0.2)
+            this.spawnOrb(b.x, b.y + 20 * u, Math.cos(a) * (180 + si * 16) * u, Math.sin(a) * (180 + si * 16) * u)
+          }
+          b.muzzle = 0.1
+          this.audio.eShot()
+        }
+      }
+      b.minionAcc += dt
+      if (b.minionAcc > Math.max(1.8, 4.2 - si * 0.45 - hell * 0.8)) {
+        b.minionAcc = 0
+        this.spawnEnemy()
+        this.spawnEnemy()
+        if (hell > 0.6) this.spawnEnemy()
       }
     }
   }
@@ -601,6 +982,24 @@ export class Engine {
           b.dead = true
           this.damageEnemy(e, b.dmg)
           break
+        }
+      }
+      if (!b.dead) {
+        for (const o of this.orbs) {
+          if (o.dead || (o.type !== 'big' && o.type !== 'bomb')) continue
+          const r = (o.type === 'big' ? 16 : 13) * u
+          if (Math.abs(b.x - o.x) < r && Math.abs(b.y - o.y) < r) {
+            b.dead = true
+            o.hp = (o.hp || 1) - b.dmg
+            if ((o.hp || 0) <= 0) {
+              o.dead = true
+              this.burst(o.x, o.y, o.type === 'big' ? C.pink : C.orange, 8)
+              this.score += 15
+              this.addFloat(o.x, o.y, '+15', C.steel, 0.6, 0.8)
+              this.audio.kill()
+            }
+            break
+          }
         }
       }
       if (!b.dead && this.boss && this.boss.y > 0) {
@@ -624,8 +1023,11 @@ export class Engine {
       }
       if (this.invincT <= 0) {
         for (const o of this.orbs) {
-          if (Math.hypot(o.x - this.px2, o.y - this.py2) < 26 * u) {
-            o.y = this.H + 99
+          if (o.dead) continue
+          const r = (o.type === 'big' ? 26 : o.type === 'bomb' ? 20 : o.type === 'frag' ? 16 : 20) * u
+          if (Math.hypot(o.x - this.px2, o.y - this.py2) < r) {
+            o.dead = true
+            if (o.type === 'bomb') this.explodeBomb(o)
             this.hurt()
             break
           }
@@ -651,7 +1053,8 @@ export class Engine {
       const sc = ENEMY_DEF[e.kind].score * mult
       this.score += sc
       this.addFloat(e.x, e.y, `+${sc}`, C.bright, 0.8, 1)
-      this.burst(e.x, e.y, C.danger, 10)
+      this.burst(e.x, e.y, ENEMY_DEF[e.kind].chunk, 8)
+      this.burst(e.x, e.y, C.white, 4)
       this.audio.kill()
       if (e.kind === 'slop' && !e.small) {
         for (let i = -1; i <= 1; i += 2)
@@ -666,9 +1069,12 @@ export class Engine {
             baseX: e.x + i * 16 * this.unit,
             flash: 0,
             small: true,
+            age: 0.3,
+            shootAcc: -2,
+            muzzle: 0,
           })
       }
-      if (this.rng() < 0.14) this.spawnPickup('barrel', e.x, e.y)
+      if (this.rng() < BARREL_KILL_CHANCE) this.spawnPickup('barrel', e.x, e.y)
     }
   }
 
@@ -696,7 +1102,7 @@ export class Engine {
       if (this.stageIdx % 2 === 1) this.spawnPickup('perk_win', b.x, b.y - 20 * this.unit)
       this.phase = 'clear'
       this.phaseT = 2.4
-      const refill = Math.round(this.cap() * 0.4)
+      const refill = Math.round(this.cap() * STAGE_CLEAR_REFILL_PCT)
       this.tokens = Math.min(this.cap(), this.tokens + refill)
       this.intro = {
         kind: 'clear',
@@ -711,7 +1117,7 @@ export class Engine {
   }
 
   private hurt(): void {
-    const loss = Math.round(this.cap() * 0.13)
+    const loss = Math.round(this.cap() * (0.16 + this.hell() * 0.04))
     this.tokens = Math.max(0, this.tokens - loss)
     this.invincT = 1.2
     this.combo = 0
@@ -737,7 +1143,7 @@ export class Engine {
   private takePickup(kind: string): void {
     const u = this.unit
     if (kind === 'barrel') {
-      const add = Math.round(this.cap() * 0.16)
+      const add = Math.round(this.cap() * BARREL_REFILL_PCT)
       this.tokens = Math.min(this.cap(), this.tokens + add)
       this.barrels++
       this.addFloat(this.px2, this.py2 - 40 * u, `+${fmtInt(add)} токенов`, C.bright, 0.9, 1)
@@ -748,11 +1154,18 @@ export class Engine {
       this.audio.upgrade()
     } else if (kind === 'doc_skill') {
       if (this.skillLvl < 3) this.skillLvl++
-      this.addFloat(this.px2, this.py2 - 46 * u, `SKILL.MD · расход −${100 - Math.round(Math.pow(0.85, this.skillLvl) * 100)}%`, C.blue, 1.2, 1.1)
+      this.addFloat(
+        this.px2,
+        this.py2 - 46 * u,
+        `SKILL.MD · огонь +${Math.round(this.skillLvl * 35)}% · расход −${100 - Math.round(Math.pow(0.85, this.skillLvl) * 100)}%`,
+        C.blue,
+        1.3,
+        1.1,
+      )
       this.audio.upgrade()
     } else if (kind === 'mini') {
       if (this.subs < 2) this.subs++
-      this.addFloat(this.px2, this.py2 - 46 * u, `SUBAGENT ×${this.subs}`, C.bright, 1.2, 1.1)
+      this.addFloat(this.px2, this.py2 - 46 * u, `SUBAGENT ×${this.subs} · урон ${this.agentLvl}`, C.bright, 1.2, 1.1)
       this.audio.upgrade()
     } else if (kind === 'perk_zip') {
       this.compressT = 18
@@ -955,10 +1368,42 @@ export class Engine {
       ctx.fillRect(Math.round(b.x - w / 2), Math.round(b.y - 8), w, 12)
     }
     for (const o of this.orbs) {
-      ctx.fillStyle = C.danger
-      ctx.fillRect(Math.round(o.x - 5), Math.round(o.y - 5), 10, 10)
-      ctx.fillStyle = C.white
-      ctx.fillRect(Math.round(o.x - 2), Math.round(o.y - 2), 4, 4)
+      if (o.type === 'big') {
+        const wob = Math.floor(this.time * 8) % 2
+        ctx.fillStyle = C.pink
+        ctx.fillRect(Math.round(o.x - 9 - wob), Math.round(o.y - 8), 18 + wob * 2, 16)
+        ctx.fillRect(Math.round(o.x - 6), Math.round(o.y - 11), 12, 22)
+        ctx.fillStyle = C.white
+        ctx.fillRect(Math.round(o.x - 3), Math.round(o.y - 4), 4, 4)
+      } else if (o.type === 'homing') {
+        const s = 6
+        ctx.save()
+        ctx.translate(Math.round(o.x), Math.round(o.y))
+        ctx.rotate(Math.atan2(o.vy, o.vx) + Math.PI / 4)
+        ctx.fillStyle = C.violet
+        ctx.fillRect(-s, -s, s * 2, s * 2)
+        ctx.fillStyle = C.white
+        ctx.fillRect(-2, -2, 4, 4)
+        ctx.restore()
+      } else if (o.type === 'bomb') {
+        const panic = (o.timer || 0) < 0.6
+        const blink = Math.floor(this.time * (panic ? 16 : 7)) % 2 === 0
+        const map = MAPS.bomb
+        const p = Math.max(2, Math.round(this.pu() * 0.8))
+        drawMap(ctx, map, Math.round(o.x - (map[0].length * p) / 2), Math.round(o.y - (map.length * p) / 2), p)
+        if (blink) {
+          ctx.fillStyle = C.white
+          ctx.fillRect(Math.round(o.x - 3), Math.round(o.y - 1), 6, 6)
+        }
+      } else if (o.type === 'frag') {
+        ctx.fillStyle = C.orange
+        ctx.fillRect(Math.round(o.x - 3), Math.round(o.y - 3), 6, 6)
+      } else {
+        ctx.fillStyle = C.danger
+        ctx.fillRect(Math.round(o.x - 5), Math.round(o.y - 5), 10, 10)
+        ctx.fillStyle = C.white
+        ctx.fillRect(Math.round(o.x - 2), Math.round(o.y - 2), 4, 4)
+      }
     }
   }
 
@@ -992,13 +1437,6 @@ export class Engine {
         ctx.globalAlpha = 0.75
         ctx.fillStyle = C.white
         ctx.fillRect(Math.round(e.x - mw / 2), Math.round(e.y - mh / 2), mw, mh)
-      }
-      if (e.maxHp > 1) {
-        ctx.globalAlpha = 1
-        for (let i = 0; i < e.maxHp; i++) {
-          ctx.fillStyle = i < e.hp ? C.danger : 'rgba(230,242,238,0.25)'
-          ctx.fillRect(Math.round(e.x - mw / 2 + i * 8), Math.round(e.y - mh / 2 - 7), 6, 3)
-        }
       }
       ctx.restore()
     }
