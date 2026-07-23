@@ -1,205 +1,96 @@
-// WebAudio-синтез SFX и музыки. Ноль медиа-ассетов, мгновенно, офлайн.
-// Все звуки генерируются на лету осцилляторами.
+// WebAudio-синтез для шутера AI PDLC RUSH v2. Перенос из макета (Audio2). Без медиа-ассетов.
 
 export class GameAudio {
   private ctx: AudioContext | null = null
-  private master: GainNode | null = null
-  private musicGain: GainNode | null = null
-  private muted = false
+  private muted = true
   private musicTimer: number | null = null
-  private musicStep = 0
-  private tempo = 1
+  private step = 0
+  private readonly notes = [110, 110, 165, 110, 131, 110, 165, 196]
 
-  // Мажорная пентатоника — приятно на слух при быстрых сборах.
-  private readonly scale = [0, 2, 4, 7, 9, 12, 14, 16]
-
-  init(): void {
-    if (this.ctx) return
-    try {
-      const AC: typeof AudioContext =
-        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext ||
-        window.AudioContext
-      this.ctx = new AC()
-      this.master = this.ctx.createGain()
-      this.master.gain.value = this.muted ? 0 : 0.9
-      this.master.connect(this.ctx.destination)
-      this.musicGain = this.ctx.createGain()
-      this.musicGain.gain.value = 0.16
-      this.musicGain.connect(this.master)
-    } catch {
-      this.ctx = null
+  private ensure(): AudioContext | null {
+    if (!this.ctx) {
+      const AC: typeof AudioContext | undefined =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (AC) this.ctx = new AC()
     }
+    return this.ctx
   }
 
   resume(): void {
-    this.init()
-    if (this.ctx && this.ctx.state === 'suspended') void this.ctx.resume()
+    const c = this.ensure()
+    if (c && c.state === 'suspended') void c.resume()
   }
 
   setMuted(m: boolean): void {
     this.muted = m
-    if (this.master && this.ctx) {
-      this.master.gain.setTargetAtTime(m ? 0 : 0.9, this.ctx.currentTime, 0.02)
-    }
   }
 
-  private freqFromSemitone(semi: number, base = 220): number {
-    return base * Math.pow(2, semi / 12)
+  private beep(freq: number, dur: number, type: OscillatorType, vol?: number, slide?: number): void {
+    if (this.muted) return
+    const c = this.ensure()
+    if (!c) return
+    const o = c.createOscillator()
+    const g = c.createGain()
+    o.type = type || 'square'
+    o.frequency.setValueAtTime(freq, c.currentTime)
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), c.currentTime + dur)
+    g.gain.setValueAtTime(vol || 0.05, c.currentTime)
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur)
+    o.connect(g)
+    g.connect(c.destination)
+    o.start()
+    o.stop(c.currentTime + dur)
   }
 
-  private beep(freq: number, dur: number, type: OscillatorType, gain: number, when = 0): void {
-    if (!this.ctx || !this.master || this.muted) return
-    const t = this.ctx.currentTime + when
-    const osc = this.ctx.createOscillator()
-    const g = this.ctx.createGain()
-    osc.type = type
-    osc.frequency.setValueAtTime(freq, t)
-    g.gain.setValueAtTime(0.0001, t)
-    g.gain.exponentialRampToValueAtTime(gain, t + 0.008)
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur)
-    osc.connect(g)
-    g.connect(this.master)
-    osc.start(t)
-    osc.stop(t + dur + 0.02)
+  shot(): void {
+    this.beep(720, 0.04, 'square', 0.018, -300)
   }
-
-  // Сбор токена: тон растёт со звеном комбо -> "набегающая" мелодия.
-  token(comboStep: number): void {
-    const semi = this.scale[Math.min(comboStep, this.scale.length - 1)]
-    this.beep(this.freqFromSemitone(semi + 12, 330), 0.16, 'triangle', 0.22)
+  kill(): void {
+    this.beep(300, 0.12, 'sawtooth', 0.04, -140)
   }
-
-  golden(): void {
-    this.beep(880, 0.1, 'square', 0.18)
-    this.beep(1320, 0.22, 'triangle', 0.2, 0.06)
+  pickup(): void {
+    this.beep(520, 0.12, 'square', 0.05, 260)
   }
-
-  multiplierUp(): void {
-    this.beep(660, 0.09, 'square', 0.2)
-    this.beep(990, 0.14, 'square', 0.2, 0.07)
-    this.beep(1320, 0.2, 'triangle', 0.18, 0.14)
+  upgrade(): void {
+    this.beep(660, 0.22, 'square', 0.06, 330)
   }
-
-  nearMiss(): void {
-    this.beep(1400, 0.06, 'sine', 0.12)
+  hit(): void {
+    this.beep(120, 0.28, 'sawtooth', 0.09, -70)
   }
-
-  swipe(): void {
-    this.beep(320, 0.06, 'sine', 0.1)
+  bossIn(): void {
+    this.beep(180, 0.4, 'sawtooth', 0.07, -60)
   }
-
-  jump(): void {
-    if (!this.ctx || !this.master || this.muted) return
-    const t = this.ctx.currentTime
-    const osc = this.ctx.createOscillator()
-    const g = this.ctx.createGain()
-    osc.type = 'sine'
-    osc.frequency.setValueAtTime(300, t)
-    osc.frequency.exponentialRampToValueAtTime(720, t + 0.14)
-    g.gain.setValueAtTime(0.14, t)
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16)
-    osc.connect(g)
-    g.connect(this.master)
-    osc.start(t)
-    osc.stop(t + 0.18)
+  bossDie(): void {
+    this.beep(90, 0.6, 'sawtooth', 0.09, -50)
   }
-
-  powerup(): void {
-    this.beep(520, 0.1, 'square', 0.2)
-    this.beep(780, 0.1, 'square', 0.2, 0.08)
-    this.beep(1040, 0.18, 'triangle', 0.2, 0.16)
+  stage(): void {
+    this.beep(392, 0.22, 'square', 0.05, 190)
   }
-
-  crash(): void {
-    if (!this.ctx || !this.master || this.muted) return
-    const t = this.ctx.currentTime
-    // Шумовой удар.
-    const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.3, this.ctx.sampleRate)
-    const data = buffer.getChannelData(0)
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 2)
-    const src = this.ctx.createBufferSource()
-    src.buffer = buffer
-    const g = this.ctx.createGain()
-    g.gain.setValueAtTime(0.5, t)
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3)
-    const filter = this.ctx.createBiquadFilter()
-    filter.type = 'lowpass'
-    filter.frequency.value = 900
-    src.connect(filter)
-    filter.connect(g)
-    g.connect(this.master)
-    src.start(t)
-    // Низкий "бум".
-    this.beep(90, 0.25, 'sawtooth', 0.3)
+  lowTok(): void {
+    this.beep(220, 0.09, 'triangle', 0.05)
   }
-
   gameOver(): void {
-    this.beep(440, 0.16, 'triangle', 0.2)
-    this.beep(330, 0.16, 'triangle', 0.2, 0.14)
-    this.beep(220, 0.4, 'triangle', 0.2, 0.28)
+    this.beep(220, 0.5, 'sawtooth', 0.07, -160)
+  }
+  countdownTick(go: boolean): void {
+    this.beep(go ? 880 : 440, go ? 0.25 : 0.1, 'square', 0.06)
   }
 
-  countdownTick(final: boolean): void {
-    this.beep(final ? 880 : 520, final ? 0.3 : 0.12, 'square', 0.2)
-  }
-
-  zoneChange(): void {
-    this.beep(660, 0.1, 'triangle', 0.18)
-    this.beep(880, 0.16, 'triangle', 0.18, 0.08)
-  }
-
-  // Фоновая музыка: простой арпеджио-луп, темп растёт со скоростью.
   startMusic(): void {
-    if (this.musicTimer !== null) return
-    this.musicStep = 0
-    const tick = () => {
-      if (!this.ctx || !this.musicGain || this.muted) {
-        this.musicTimer = window.setTimeout(tick, 220 / this.tempo)
-        return
+    this.stopMusic()
+    this.musicTimer = window.setInterval(() => {
+      if (!this.muted) {
+        this.beep(this.notes[this.step % 8], 0.1, 'triangle', 0.026)
+        this.step++
       }
-      const pattern = [0, 7, 12, 7, 4, 7, 12, 16]
-      const semi = pattern[this.musicStep % pattern.length]
-      const t = this.ctx.currentTime
-      const osc = this.ctx.createOscillator()
-      const g = this.ctx.createGain()
-      osc.type = 'triangle'
-      osc.frequency.value = this.freqFromSemitone(semi, 110)
-      g.gain.setValueAtTime(0.0001, t)
-      g.gain.exponentialRampToValueAtTime(0.5, t + 0.02)
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2)
-      osc.connect(g)
-      g.connect(this.musicGain)
-      osc.start(t)
-      osc.stop(t + 0.24)
-      // Бас на сильную долю.
-      if (this.musicStep % 4 === 0) {
-        const bass = this.ctx.createOscillator()
-        const bg = this.ctx.createGain()
-        bass.type = 'sine'
-        bass.frequency.value = this.freqFromSemitone(0, 55)
-        bg.gain.setValueAtTime(0.6, t)
-        bg.gain.exponentialRampToValueAtTime(0.0001, t + 0.3)
-        bass.connect(bg)
-        bg.connect(this.musicGain)
-        bass.start(t)
-        bass.stop(t + 0.32)
-      }
-      this.musicStep++
-      this.musicTimer = window.setTimeout(tick, 220 / this.tempo)
-    }
-    tick()
-  }
-
-  setTempo(t: number): void {
-    this.tempo = Math.max(0.8, Math.min(2.2, t))
+    }, 230)
   }
 
   stopMusic(): void {
     if (this.musicTimer !== null) {
-      clearTimeout(this.musicTimer)
+      clearInterval(this.musicTimer)
       this.musicTimer = null
     }
   }
 }
-
-export const gameAudio = new GameAudio()

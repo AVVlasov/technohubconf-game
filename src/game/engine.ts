@@ -1,73 +1,95 @@
-// Ядро AI PDLC RUSH: game loop, сущности, спавн, коллизии, комбо/мультипликатор,
-// near-miss/flow, зоны, скоринг, juice. Рендер на Canvas 2D. Общается с React через колбэки.
+// AI PDLC RUSH v2 — вертикальный скролл-шутер. Перенос из интерактивного макета (rush-shooter.js) в TypeScript.
+// Игрок ведёт агента пальцем, агент стреляет сам. Контекст-токены = топливо/HP.
+// Боссы-«болезни агента», сбор харнеса → Dark Factory ×2, апгрейды AGENT.MD/SKILL.MD/SUBAGENT, перки.
 
-import { gameAudio } from './audio'
-import { chance, mulberry32, pick, randInt, randRange, RNG } from './rng'
-import { getZone, lapLabel, Zone } from './zones'
+import { GameAudio } from './audio'
+import { mulberry32, RNG } from './rng'
+import { C, CAP_STEPS, capLabel, drawMap, ENEMY_DEF, fmtInt, HARNESS, MAPS, STAGES, Stage } from './sprites'
 
-export type GameState = 'ready' | 'countdown' | 'playing' | 'gameover'
+export type GameState = 'ready' | 'playing' | 'gameover'
+type Phase = 'intro' | 'wave' | 'boss' | 'clear'
+type Emo = 'ok' | 'worry' | 'hurt' | 'happy'
+
+export interface IntroCard {
+  kind: 'stage' | 'boss' | 'clear' | 'dark'
+  title: string
+  sub: string
+  legend: string
+  sprite: string
+}
 
 export interface Stats {
   score: number
   best: number
-  lives: number
-  multiplier: number
-  combo: number
-  maxCombo: number
-  zoneName: string
-  zoneShort: string
-  zoneEmoji: string
-  lap: string
-  flow: boolean
-  flowMeter: number
   tokens: number
-  shieldT: number
-  magnetT: number
-  boostT: number
-  autopilotT: number
-  speedKmh: number
-  nearMisses: number
+  cap: number
+  capLabel: string
+  tokenPct: number
+  stageName: string
+  stageAccent: string
+  lap: string
+  agentLvl: number
+  skillLvl: number
+  subs: number
+  harness: string[]
+  darkFactory: boolean
+  compress: boolean
+  combo: number
+  boss: { name: string; pct: number } | null
+  intro: IntroCard | null
+  kills: number
 }
 
 export interface GameResult {
   score: number
-  tokens: number
-  maxCombo: number
-  nearMisses: number
-  zoneName: string
-  distance: number
+  base: number
+  tokenBonus: number
+  harnessBonus: number
+  victoryBonus: number
+  won: boolean
+  kills: number
+  barrels: number
+  stageName: string
+  harness: number
+  darkFactory: boolean
+  capLabel: string
+  agentLvl: number
+  subs: number
 }
 
-type PowerKind = 'shield' | 'magnet' | 'boost' | 'autopilot' | 'fountain'
-type ObstacleType = 'low' | 'wall' | 'over'
-
-interface Obstacle {
-  lane: number
+interface Enemy {
+  kind: string
+  x: number
   y: number
-  w: number
-  h: number
-  type: ObstacleType
-  passed: boolean
-  blink: boolean
-  seed: number
+  hp: number
+  maxHp: number
+  vy: number
+  phase: number
+  baseX: number
+  flash: number
+  small: boolean
 }
-
-interface Token {
-  lane: number
+interface Bullet {
+  x: number
   y: number
-  golden: boolean
-  taken: boolean
-  x: number // для магнита
-  pulled: boolean
+  vy: number
+  dmg: number
+  vx?: number
+  sub?: boolean
+  dead?: boolean
 }
-
-interface Power {
-  lane: number
+interface Orb {
+  x: number
   y: number
-  kind: PowerKind
-  taken: boolean
+  vx: number
+  vy: number
 }
-
+interface Pickup {
+  kind: string
+  x: number
+  y: number
+  vy: number
+}
 interface Particle {
   x: number
   y: number
@@ -77,10 +99,7 @@ interface Particle {
   maxLife: number
   color: string
   size: number
-  gravity: number
-  spark: boolean
 }
-
 interface FloatText {
   x: number
   y: number
@@ -91,123 +110,151 @@ interface FloatText {
   vy: number
   scale: number
 }
-
-const LANES = 3
-const MULT_STEPS: Array<{ c: number; m: number }> = [
-  { c: 0, m: 1 },
-  { c: 5, m: 1.5 },
-  { c: 10, m: 2 },
-  { c: 20, m: 3 },
-  { c: 35, m: 4 },
-  { c: 55, m: 5 },
-]
-
-const POWER_META: Record<PowerKind, { emoji: string; color: string; label: string }> = {
-  shield: { emoji: '🛡', color: '#45c9ff', label: 'QA-ЩИТ' },
-  magnet: { emoji: '🧲', color: '#c07bff', label: 'МАГНИТ' },
-  boost: { emoji: '🚀', color: '#ff9f45', label: 'СПРИНТ-БУСТ' },
-  autopilot: { emoji: '🤖', color: '#21e08a', label: 'AI-АВТОПИЛОТ' },
-  fountain: { emoji: '💠', color: '#ffd447', label: 'ТОКЕН-ФОНТАН' },
+interface Boss {
+  x: number
+  y: number
+  ty: number
+  hp: number
+  maxHp: number
+  phase: number
+  shootAcc: number
+  minionAcc: number
+  flash: number
+}
+interface DropItem {
+  t: number
+  kind: string
+  done?: boolean
 }
 
-const TOKEN_VALUE = 25
-const GOLDEN_VALUE = 150
-const NEARMISS_BONUS = 15
-const DIST_POINTS = 0.5
-
 export class Engine {
+  private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
+  audio = new GameAudio()
+
   private W = 450
   private H = 800
   private unit = 1
   private dpr = 1
 
-  private rng: RNG = mulberry32(1)
-  private seed = 1
-
   state: GameState = 'ready'
   private raf = 0
   private lastTime = 0
   private time = 0
-
-  // Мир
-  private speed = 0 // px/сек
-  private baseSpeed = 0
-  private distance = 0
-  private spawnAcc = 0
-  private zoneCounter = 0
-  private distanceInZone = 0
-  private zone: Zone = getZone(0)
-  private zoneFlash = 0
-  private bannerT = 0
-
-  // Игрок
-  private laneIndex = 1
-  private prevLane = 1
-  private laneChangeT = 0
-  private playerX = 0
-  private targetX = 0
-  private jumpT = 0
-  private slideT = 0
-  private readonly jumpDur = 0.62
-  private readonly slideDur = 0.5
-  private bufferedAction: '' | 'jump' | 'slide' = ''
-  private bufferT = 0
-
-  // Стейт-эффекты
-  private lives = 3
-  private invincT = 0
-  private shieldT = 0
-  private magnetT = 0
-  private boostT = 0
-  private autopilotT = 0
-  private goldenBoostT = 0
-
-  // Комбо / очки / поток
-  private combo = 0
-  private maxCombo = 0
-  private multiplier = 1
-  private scoreFloat = 0
-  private tokens = 0
-  private nearMisses = 0
-  private flowMeter = 0
-  private lastNearT = -10
-  private consecutiveNear = 0
-
   private best = 0
-
-  // Сущности
-  private obstacles: Obstacle[] = []
-  private tokenList: Token[] = []
-  private powers: Power[] = []
-  private particles: Particle[] = []
-  private floats: FloatText[] = []
-  private trail: Array<{ x: number; y: number; life: number }> = []
-
-  // Juice
-  private shake = 0
-  private hitstop = 0
-  private zoom = 1
-  private targetZoom = 1
-
-  private inventory: PowerKind | null = null
-
-  private statsAcc = 0
   private reduceMotion = false
+  private startIdx = 0
 
   onStats: (s: Stats) => void = () => undefined
   onGameOver: (r: GameResult) => void = () => undefined
 
-  constructor(ctx: CanvasRenderingContext2D) {
-    this.ctx = ctx
+  private rng: RNG = mulberry32(1)
+  private stageIdx = 0
+  private lap = 0
+  private stage: Stage = STAGES[0]
+  private phase: Phase = 'intro'
+  private phaseT = 0
+  private waveT = 0
+  private spawnAcc = 0
+  private dropQueue: DropItem[] = []
+  private px2 = 0
+  private py2 = 0
+  private tx = 0
+  private ty = 0
+  private capLevel = 0
+  private tokens = CAP_STEPS[0]
+  private agentLvl = 1
+  private skillLvl = 0
+  private subs = 0
+  private harness: string[] = []
+  private darkFactory = false
+  private compressT = 0
+  private invincT = 0
+  private fireAcc = 0
+  private subFireAcc = 0
+  private emo: Emo = 'ok'
+  private emoT = 0
+  private score = 0
+  private kills = 0
+  private barrels = 0
+  private combo = 0
+  private comboT = 0
+  private enemies: Enemy[] = []
+  private bullets: Bullet[] = []
+  private orbs: Orb[] = []
+  private pickups: Pickup[] = []
+  private particles: Particle[] = []
+  private floats: FloatText[] = []
+  private boss: Boss | null = null
+  private shake = 0
+  private statsAcc = 0
+  private lowTokT = 0
+  private intro: IntroCard | null = null
+  private distance = 0
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas
+    this.ctx = canvas.getContext('2d') as CanvasRenderingContext2D
+    this.resetVars()
+  }
+
+  private resetVars(): void {
+    this.rng = mulberry32(1)
+    this.stageIdx = 0
+    this.lap = 0
+    this.stage = STAGES[0]
+    this.phase = 'intro'
+    this.phaseT = 0
+    this.waveT = 0
+    this.spawnAcc = 0
+    this.dropQueue = []
+    this.px2 = 0
+    this.py2 = 0
+    this.tx = 0
+    this.ty = 0
+    this.capLevel = 0
+    this.tokens = CAP_STEPS[0]
+    this.agentLvl = 1
+    this.skillLvl = 0
+    this.subs = 0
+    this.harness = []
+    this.darkFactory = false
+    this.compressT = 0
+    this.invincT = 0
+    this.fireAcc = 0
+    this.subFireAcc = 0
+    this.emo = 'ok'
+    this.emoT = 0
+    this.score = 0
+    this.kills = 0
+    this.barrels = 0
+    this.combo = 0
+    this.comboT = 0
+    this.enemies = []
+    this.bullets = []
+    this.orbs = []
+    this.pickups = []
+    this.particles = []
+    this.floats = []
+    this.boss = null
+    this.shake = 0
+    this.statsAcc = 0
+    this.lowTokT = 0
+    this.intro = null
+    this.distance = 0
   }
 
   setBest(b: number): void {
     this.best = b
   }
-
   setReduceMotion(v: boolean): void {
     this.reduceMotion = v
+  }
+  setMuted(m: boolean): void {
+    this.audio.setMuted(m)
+  }
+  setStartStage(i: number): void {
+    this.startIdx = Math.max(0, Math.min(5, i | 0))
   }
 
   resize(cssW: number, cssH: number, dpr: number): void {
@@ -215,298 +262,211 @@ export class Engine {
     this.H = cssH
     this.dpr = dpr
     this.unit = cssH / 800
-    const canvas = this.ctx.canvas
-    canvas.width = Math.round(cssW * dpr)
-    canvas.height = Math.round(cssH * dpr)
-    this.targetX = this.laneX(this.laneIndex)
-    if (this.state !== 'playing') this.playerX = this.targetX
-  }
-
-  private laneWidth(): number {
-    return this.W / LANES
-  }
-
-  private laneX(i: number): number {
-    return this.laneWidth() * (i + 0.5)
-  }
-
-  private get playerY(): number {
-    return this.H * 0.78
-  }
-
-  private get playerSize(): number {
-    return Math.min(this.laneWidth() * 0.5, 54 * this.unit)
-  }
-
-  // --- Управление (вызывается из React) ---
-  moveLeft(): void {
-    if (this.state !== 'playing' || this.autopilotT > 0) return
-    if (this.laneIndex > 0) {
-      this.prevLane = this.laneIndex
-      this.laneIndex--
-      this.laneChangeT = 0.3
-      this.targetX = this.laneX(this.laneIndex)
-      gameAudio.swipe()
+    this.canvas.width = Math.round(cssW * dpr)
+    this.canvas.height = Math.round(cssH * dpr)
+    if (this.state !== 'playing') {
+      this.px2 = cssW / 2
+      this.py2 = cssH * 0.8
+      this.tx = this.px2
+      this.ty = this.py2
+      this.renderStatic()
     }
   }
 
-  moveRight(): void {
-    if (this.state !== 'playing' || this.autopilotT > 0) return
-    if (this.laneIndex < LANES - 1) {
-      this.prevLane = this.laneIndex
-      this.laneIndex++
-      this.laneChangeT = 0.3
-      this.targetX = this.laneX(this.laneIndex)
-      gameAudio.swipe()
-    }
+  private pu(): number {
+    return Math.max(2, Math.round(4 * this.unit))
   }
 
-  jump(): void {
-    if (this.state !== 'playing' || this.autopilotT > 0) return
-    if (this.jumpT <= 0 && this.slideT <= 0) {
-      this.jumpT = this.jumpDur
-      gameAudio.jump()
-    } else {
-      this.bufferedAction = 'jump'
-      this.bufferT = 0.14
-    }
+  // --- управление: палец задаёт цель ---
+  setTarget(x: number, y: number): void {
+    this.tx = Math.max(20, Math.min(this.W - 20, x))
+    this.ty = Math.max(this.H * 0.42, Math.min(this.H - 40, y))
   }
-
-  slide(): void {
-    if (this.state !== 'playing' || this.autopilotT > 0) return
-    if (this.slideT <= 0 && this.jumpT <= 0) {
-      this.slideT = this.slideDur
-      gameAudio.swipe()
-    } else {
-      this.bufferedAction = 'slide'
-      this.bufferT = 0.14
-    }
-  }
-
-  usePowerup(): void {
-    if (this.state !== 'playing' || !this.inventory) return
-    this.activatePower(this.inventory)
-    this.inventory = null
-  }
-
-  // --- Жизненный цикл ---
-  reset(seed: number): void {
-    this.seed = seed >>> 0
-    this.rng = mulberry32(this.seed)
-    this.speed = 6 * 60 * this.unit // px/сек
-    this.baseSpeed = this.speed
-    this.distance = 0
-    this.spawnAcc = 0
-    this.zoneCounter = 0
-    this.distanceInZone = 0
-    this.zone = getZone(0)
-    this.zoneFlash = 0
-    this.bannerT = 1.6
-    this.laneIndex = 1
-    this.prevLane = 1
-    this.laneChangeT = 0
-    this.playerX = this.laneX(1)
-    this.targetX = this.playerX
-    this.jumpT = 0
-    this.slideT = 0
-    this.bufferedAction = ''
-    this.lives = 3
-    this.invincT = 0
-    this.shieldT = 0
-    this.magnetT = 0
-    this.boostT = 0
-    this.autopilotT = 0
-    this.goldenBoostT = 0
-    this.combo = 0
-    this.maxCombo = 0
-    this.multiplier = 1
-    this.scoreFloat = 0
-    this.tokens = 0
-    this.nearMisses = 0
-    this.flowMeter = 0
-    this.lastNearT = -10
-    this.consecutiveNear = 0
-    this.obstacles = []
-    this.tokenList = []
-    this.powers = []
-    this.particles = []
-    this.floats = []
-    this.trail = []
-    this.shake = 0
-    this.hitstop = 0
-    this.zoom = 1
-    this.targetZoom = 1
-    this.inventory = null
-    this.time = 0
-    this.statsAcc = 0
+  nudge(dx: number, dy: number): void {
+    this.setTarget(this.tx + dx, this.ty + dy)
   }
 
   start(seed: number): void {
-    this.reset(seed)
+    this.resetVars()
+    this.rng = mulberry32(seed >>> 0)
+    this.px2 = this.W / 2
+    this.py2 = this.H * 0.8
+    this.tx = this.px2
+    this.ty = this.py2
     this.state = 'playing'
-    gameAudio.resume()
-    gameAudio.startMusic()
+    this.startStage(this.startIdx, 0)
+    this.audio.resume()
+    this.audio.startMusic()
     this.emitStats()
+    this.lastTime = 0
     this.loop(performance.now())
   }
 
   stop(): void {
     if (this.raf) cancelAnimationFrame(this.raf)
     this.raf = 0
-    gameAudio.stopMusic()
+    this.audio.stopMusic()
   }
-
   pause(): void {
     if (this.raf) cancelAnimationFrame(this.raf)
     this.raf = 0
     this.lastTime = 0
   }
-
   resumeLoop(): void {
-    if (this.state === 'playing' && !this.raf) {
-      this.loop(performance.now())
+    if (this.state === 'playing' && !this.raf) this.loop(performance.now())
+  }
+
+  private startStage(idx: number, lap: number): void {
+    this.stageIdx = idx
+    this.lap = lap
+    this.stage = STAGES[idx]
+    this.phase = 'intro'
+    this.phaseT = 2.6
+    this.waveT = 0
+    this.intro = {
+      kind: 'stage',
+      title: this.stage.enemyName,
+      sub: this.stage.name.toUpperCase() + (lap > 0 ? ' · ПРОД В ОГНЕ' : ''),
+      legend: this.stage.legend,
+      sprite: this.stage.enemy,
     }
+    this.dropQueue = [
+      { t: 4, kind: 'doc_agent' },
+      { t: 8, kind: 'barrel' },
+      { t: 12, kind: 'doc_skill' },
+      { t: 16, kind: 'barrel' },
+      { t: 20, kind: this.rng() < 0.5 ? 'perk_zip' : 'perk_win' },
+    ]
+    if (idx === 1 || idx === 3 || lap > 0) this.dropQueue.push({ t: 14, kind: 'mini' })
+    this.audio.stage()
+    this.emitStats()
   }
 
   private loop = (now: number): void => {
     if (!this.lastTime) this.lastTime = now
     let dt = (now - this.lastTime) / 1000
     this.lastTime = now
-    if (dt > 0.05) dt = 0.05 // защита от скачков (вкладка в фоне)
-
-    if (this.hitstop > 0) {
-      this.hitstop -= dt
-    } else if (this.state === 'playing') {
-      this.update(dt)
-    }
+    if (dt > 0.05) dt = 0.05
+    if (this.state === 'playing') this.update(dt)
     this.render()
-
-    if (this.state === 'playing') {
-      this.raf = requestAnimationFrame(this.loop)
-    } else {
-      this.raf = 0
-    }
+    if (this.state === 'playing') this.raf = requestAnimationFrame(this.loop)
+    else this.raf = 0
   }
 
-  // --- Обновление ---
+  private diff(): number {
+    return Math.min(1, this.stageIdx / 5 + this.time / 240)
+  }
+  private cap(): number {
+    return CAP_STEPS[this.capLevel]
+  }
+
   private update(dt: number): void {
     this.time += dt
-
-    // Таймеры эффектов
-    this.laneChangeT = Math.max(0, this.laneChangeT - dt)
+    this.distance += 120 * this.unit * dt
     this.invincT = Math.max(0, this.invincT - dt)
-    this.shieldT = Math.max(0, this.shieldT - dt)
-    this.magnetT = Math.max(0, this.magnetT - dt)
-    this.goldenBoostT = Math.max(0, this.goldenBoostT - dt)
-    if (this.bufferT > 0) this.bufferT = Math.max(0, this.bufferT - dt)
-
-    const wasBoost = this.boostT > 0
-    this.boostT = Math.max(0, this.boostT - dt)
-    if (wasBoost && this.boostT <= 0) this.targetZoom = 1
-    const wasAuto = this.autopilotT > 0
-    this.autopilotT = Math.max(0, this.autopilotT - dt)
-    if (wasAuto && this.autopilotT <= 0) {
-      this.spawnBurst(this.playerX, this.playerY, this.zone.accent, 16)
+    this.compressT = Math.max(0, this.compressT - dt)
+    if (this.emoT > 0) {
+      this.emoT -= dt
+      if (this.emoT <= 0) this.emo = 'ok'
+    }
+    if (this.comboT > 0) {
+      this.comboT -= dt
+      if (this.comboT <= 0) this.combo = 0
     }
 
-    // Скорость (плавный рост) + микро-крещендо
-    const growth = 7 * this.unit // px/сек за секунду
-    this.baseSpeed = Math.min(this.baseSpeed + growth * dt, 18 * 60 * this.unit)
-    let effSpeed = this.baseSpeed
-    if (this.boostT > 0) effSpeed *= 1.6
-    this.speed = effSpeed
-    gameAudio.setTempo(0.85 + (this.baseSpeed / (18 * 60 * this.unit)) * 1.1)
+    // движение игрока
+    const lerp = 1 - Math.pow(0.0004, dt)
+    this.px2 += (this.tx - this.px2) * lerp
+    this.py2 += (this.ty - this.py2) * lerp
 
-    // Прыжок / подкат
-    if (this.jumpT > 0) {
-      this.jumpT = Math.max(0, this.jumpT - dt)
-      if (this.jumpT <= 0 && this.bufferedAction === 'jump' && this.bufferT > 0) {
-        this.jumpT = this.jumpDur
-        this.bufferedAction = ''
+    // расход токенов
+    let burn = 130 * (1 + this.stageIdx * 0.09 + this.lap * 0.4) * Math.pow(0.85, this.skillLvl)
+    if (this.compressT > 0) burn *= 0.55
+    let aura = false
+    if (this.stage.enemy === 'rot') {
+      for (const e of this.enemies) {
+        if (e.kind === 'rot' && Math.hypot(e.x - this.px2, e.y - this.py2) < 110 * this.unit) {
+          aura = true
+          break
+        }
       }
     }
-    if (this.slideT > 0) {
-      this.slideT = Math.max(0, this.slideT - dt)
-      if (this.slideT <= 0 && this.bufferedAction === 'slide' && this.bufferT > 0) {
-        this.slideT = this.slideDur
-        this.bufferedAction = ''
+    if (aura) burn *= 2
+    this.tokens -= burn * dt
+    if (this.tokens / this.cap() < 0.2) {
+      if (this.emo === 'ok') this.emo = 'worry'
+      this.lowTokT -= dt
+      if (this.lowTokT <= 0) {
+        this.lowTokT = 0.9
+        this.audio.lowTok()
+      }
+    } else if (this.emo === 'worry' && this.emoT <= 0 && !aura) {
+      this.emo = 'ok'
+    }
+    if (aura && this.emo === 'ok') this.emo = 'worry'
+    if (this.tokens <= 0) {
+      this.tokens = 0
+      this.gameOver()
+      return
+    }
+
+    // стрельба
+    const fireRate = this.agentLvl >= 3 ? 5 : 4
+    this.fireAcc += dt
+    const shotCost = 10 * Math.pow(0.88, this.skillLvl)
+    if (this.fireAcc >= 1 / fireRate) {
+      this.fireAcc = 0
+      this.fire(this.px2, this.py2 - 26 * this.unit, this.agentLvl)
+      this.tokens = Math.max(1, this.tokens - shotCost)
+    }
+    if (this.subs > 0 || this.darkFactory) {
+      this.subFireAcc += dt
+      if (this.subFireAcc >= 0.5) {
+        this.subFireAcc = 0
+        const offs: number[] = []
+        if (this.subs >= 1) offs.push(-38)
+        if (this.subs >= 2) offs.push(38)
+        if (this.darkFactory) {
+          offs.push(-64)
+          offs.push(64)
+        }
+        for (const o of offs)
+          this.bullets.push({ x: this.px2 + o * this.unit, y: this.py2 - 8 * this.unit, vy: -460 * this.unit, dmg: 1, sub: true })
+        this.audio.shot()
       }
     }
 
-    // Автопилот: сам рулит и собирает
-    if (this.autopilotT > 0) this.autopilot()
-
-    // Плавное перемещение игрока к целевой полосе
-    const lerp = 1 - Math.pow(0.0009, dt)
-    this.playerX += (this.targetX - this.playerX) * lerp
-
-    // Трейл
-    this.trail.push({ x: this.playerX, y: this.playerY, life: 0.3 })
-    for (const t of this.trail) t.life -= dt
-    this.trail = this.trail.filter((t) => t.life > 0)
-
-    // Спавн рядов (интервал в пикселях = скорость * желаемое-время -> постоянное телеграфирование)
-    const difficulty = this.difficulty()
-    const rowInterval = this.speed * (0.95 - difficulty * 0.45)
-    this.spawnAcc += this.speed * dt
-    if (this.spawnAcc >= rowInterval) {
-      this.spawnAcc -= rowInterval
-      this.spawnRow(difficulty)
+    // фазы этапа
+    this.phaseT = Math.max(0, this.phaseT - dt)
+    if (this.phase === 'intro' && this.phaseT <= 0) {
+      this.phase = 'wave'
+      this.waveT = 0
+      this.intro = null
+    } else if (this.phase === 'wave') {
+      this.waveT += dt
+      this.spawnAcc += dt
+      const interval = Math.max(0.35, 1.3 - this.diff() * 0.6 - this.stageIdx * 0.09)
+      if (this.spawnAcc >= interval) {
+        this.spawnAcc -= interval
+        this.spawnEnemy()
+      }
+      for (const d of this.dropQueue) {
+        if (!d.done && this.waveT >= d.t) {
+          d.done = true
+          this.spawnPickup(d.kind)
+        }
+      }
+      if (this.waveT >= 24) this.startBoss()
+    } else if (this.phase === 'clear' && this.phaseT <= 0) {
+      this.startStage(this.stageIdx + 1, 0)
     }
 
-    // Движение мира
-    const dy = this.speed * dt
-    this.distance += dy
-    this.distanceInZone += dy
-
-    for (const o of this.obstacles) o.y += dy
-    for (const t of this.tokenList) t.y += dy
-    for (const p of this.powers) p.y += dy
-
-    // Смена зоны
-    const zoneLen = 4200 * this.unit
-    if (this.distanceInZone >= zoneLen) {
-      this.distanceInZone -= zoneLen
-      this.zoneCounter++
-      this.zone = getZone(this.zoneCounter)
-      this.zoneFlash = 0.5
-      this.bannerT = 1.6
-      this.baseSpeed += 0.6 * 60 * this.unit
-      this.addScore(200 + this.zoneCounter * 50, this.playerX, this.playerY - 40 * this.unit, `ЗОНА +${200 + this.zoneCounter * 50}`, this.zone.accent)
-      gameAudio.zoneChange()
-      this.shake = Math.min(this.shake + 4 * this.unit, 10 * this.unit)
-    }
-    if (this.zoneFlash > 0) this.zoneFlash = Math.max(0, this.zoneFlash - dt)
-    if (this.bannerT > 0) this.bannerT = Math.max(0, this.bannerT - dt)
-
-    // Коллизии/сбор
-    this.handleTokens(dt)
-    this.handlePowers()
-    this.handleObstacles()
-
-    // Поток
-    if (this.time - this.lastNearT > 2) this.consecutiveNear = 0
-    this.flowMeter = Math.max(0, this.flowMeter - dt * 0.35)
-
-    // Очки за дистанцию
-    const boostFactor = this.boostT > 0 ? 2 : 1
-    this.scoreFloat += (this.speed / (60 * this.unit)) * dt * DIST_POINTS * boostFactor
-
-    // Частицы / тексты
+    this.updateEntities(dt)
+    this.collide()
     this.updateParticles(dt)
-
-    // Тряска / зум
     this.shake *= Math.pow(0.001, dt)
     if (this.shake < 0.05) this.shake = 0
-    this.zoom += (this.targetZoom - this.zoom) * (1 - Math.pow(0.001, dt))
 
-    // Очистка
-    const margin = 120 * this.unit
-    this.obstacles = this.obstacles.filter((o) => o.y < this.H + margin)
-    this.tokenList = this.tokenList.filter((t) => !t.taken && t.y < this.H + margin)
-    this.powers = this.powers.filter((p) => !p.taken && p.y < this.H + margin)
-
-    // Стата в React (~15 fps) + сразу при важных событиях (в самих методах)
     this.statsAcc += dt
     if (this.statsAcc >= 0.066) {
       this.statsAcc = 0
@@ -514,399 +474,340 @@ export class Engine {
     }
   }
 
-  private difficulty(): number {
-    // 0..1: растёт с временем и номером зоны
-    const byTime = Math.min(1, this.time / 90)
-    const byZone = Math.min(1, this.zoneCounter / 8)
-    return Math.min(1, byTime * 0.6 + byZone * 0.6)
-  }
-
-  private flowActive(): boolean {
-    return this.consecutiveNear >= 3 && this.time - this.lastNearT < 2
-  }
-
-  private flowBonus(): number {
-    return this.flowActive() ? 1.25 : 1
-  }
-
-  private effectiveMultiplier(): number {
-    let m = this.multiplier
-    if (this.goldenBoostT > 0) m += 1
-    return Math.min(m, 6)
-  }
-
-  // --- Спавн ---
-  private spawnRow(difficulty: number): void {
-    const rng = this.rng
-    const y = -60 * this.unit
-    const lw = this.laneWidth()
-
-    // Иногда — "выдох": ряд только с токенами (награда после напряжения)
-    if (chance(rng, 0.12)) {
-      const n = randInt(rng, 1, LANES)
-      const lanes = this.shuffleLanes(rng).slice(0, n)
-      for (const lane of lanes) this.pushToken(lane, y, chance(rng, 0.06))
-      return
+  private fire(x: number, y: number, lvl: number): void {
+    const v = -560 * this.unit
+    if (lvl <= 1) this.bullets.push({ x, y, vy: v, dmg: 1 })
+    else if (lvl === 2) {
+      this.bullets.push({ x: x - 8 * this.unit, y, vy: v, dmg: 1 })
+      this.bullets.push({ x: x + 8 * this.unit, y, vy: v, dmg: 1 })
+    } else {
+      this.bullets.push({ x: x - 10 * this.unit, y, vy: v, dmg: 1, vx: -60 * this.unit })
+      this.bullets.push({ x, y, vy: v, dmg: 2 })
+      this.bullets.push({ x: x + 10 * this.unit, y, vy: v, dmg: 1, vx: 60 * this.unit })
     }
-
-    // Сколько полос блокировать (никогда не все 3 -> всегда есть проход)
-    let blocked = 0
-    const roll = rng()
-    if (roll < 0.28 - difficulty * 0.15) blocked = 0
-    else if (roll < 0.85) blocked = 1
-    else blocked = 2
-
-    const laneOrder = this.shuffleLanes(rng)
-    const blockedLanes = laneOrder.slice(0, blocked)
-    const freeLanes = laneOrder.slice(blocked)
-
-    for (const lane of blockedLanes) {
-      const type = this.pickObstacleType(rng, difficulty)
-      this.pushObstacle(lane, y, type, chance(rng, 0.15 + difficulty * 0.2))
-    }
-
-    // Токены в свободных полосах
-    for (const lane of freeLanes) {
-      if (chance(rng, 0.72)) {
-        const golden = chance(rng, 0.015 + difficulty * 0.015)
-        this.pushToken(lane, y, golden)
-      }
-    }
-
-    // Power-up (редко, только в свободной полосе)
-    if (freeLanes.length > 0 && chance(rng, 0.04 + difficulty * 0.04)) {
-      const lane = pick(rng, freeLanes)
-      const kind = this.pickPower(rng)
-      this.powers.push({ lane, y: y - 40 * this.unit, kind, taken: false })
-    }
-
-    // Иногда "жадный" токен прямо перед препятствием (риск-ревард)
-    if (blocked > 0 && chance(rng, 0.25)) {
-      const lane = pick(rng, blockedLanes)
-      this.pushToken(lane, y + 90 * this.unit, false)
-    }
-
-    void lw
+    this.audio.shot()
   }
 
-  private pickObstacleType(rng: RNG, difficulty: number): ObstacleType {
-    const z = this.zone.id
-    // 'over' (подкат) появляется в поздних зонах/сложности
-    const allowOver = z >= 4 || difficulty > 0.5
-    const r = rng()
-    if (allowOver && r < 0.25) return 'over'
-    if (r < 0.6) return 'wall'
-    return 'low'
-  }
-
-  private pickPower(rng: RNG): PowerKind {
-    const pool: PowerKind[] = ['shield', 'magnet', 'boost', 'autopilot', 'fountain']
-    return pick(rng, pool)
-  }
-
-  private shuffleLanes(rng: RNG): number[] {
-    const arr = [0, 1, 2]
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1))
-      ;[arr[i], arr[j]] = [arr[j], arr[i]]
-    }
-    return arr
-  }
-
-  private pushObstacle(lane: number, y: number, type: ObstacleType, blink: boolean): void {
-    const lw = this.laneWidth()
-    let h = 46 * this.unit
-    if (type === 'wall') h = 70 * this.unit
-    if (type === 'over') h = 40 * this.unit
-    this.obstacles.push({
-      lane,
-      y,
-      w: lw * 0.66,
-      h,
-      type,
-      passed: false,
-      blink,
-      seed: Math.floor(this.rng() * 1000),
+  private spawnEnemy(): void {
+    const kind = this.stage.enemy
+    const def = ENEMY_DEF[kind]
+    const x = 30 + this.rng() * (this.W - 60)
+    const hp = def.hp + Math.floor(this.stageIdx / 2)
+    this.enemies.push({
+      kind,
+      x,
+      y: -40 * this.unit,
+      hp,
+      maxHp: hp,
+      vy: def.vy * this.unit * (0.9 + this.rng() * 0.3) * (1 + this.stageIdx * 0.12 + this.diff() * 0.4),
+      phase: this.rng() * Math.PI * 2,
+      baseX: x,
+      flash: 0,
+      small: false,
     })
   }
 
-  private pushToken(lane: number, y: number, golden: boolean): void {
-    this.tokenList.push({ lane, y, golden, taken: false, x: this.laneX(lane), pulled: false })
+  private spawnPickup(kind: string, x?: number, y?: number): void {
+    this.pickups.push({
+      kind,
+      x: x != null ? x : 30 + this.rng() * (this.W - 60),
+      y: y != null ? y : -30 * this.unit,
+      vy: 95 * this.unit,
+    })
   }
 
-  // --- Обработка сущностей ---
-  private handleTokens(dt: number): void {
-    const collectR = this.playerSize * 0.7
-    for (const t of this.tokenList) {
-      if (t.taken) continue
-      const magnet = this.magnetT > 0
-      const tx = this.laneX(t.lane)
-      if (magnet && Math.abs(t.y - this.playerY) < this.H * 0.5) {
-        // Притягивание
-        t.pulled = true
-        const pull = 1 - Math.pow(0.0005, dt)
-        t.x += (this.playerX - t.x) * pull
-      } else {
-        t.x = tx
-      }
-      const dx = Math.abs(t.x - this.playerX)
-      const dyToken = Math.abs(t.y - this.playerY)
-      const laneHit = t.lane === this.laneIndex || (magnet && dx < collectR) || t.pulled
-      if (laneHit && dyToken < collectR && dx < this.laneWidth() * 0.6) {
-        this.collectToken(t)
-      }
+  private startBoss(): void {
+    this.phase = 'boss'
+    this.enemies = this.enemies.filter((e) => e.y < this.H * 0.5)
+    const hp = 30 + this.stageIdx * 14 + (this.stageIdx === 5 ? 22 : 0)
+    this.boss = { x: this.W / 2, y: -80 * this.unit, ty: this.H * 0.2, hp, maxHp: hp, phase: 0, shootAcc: 0, minionAcc: 0, flash: 0 }
+    this.intro = {
+      kind: 'boss',
+      title: this.stage.boss,
+      sub: 'БОСС ЭТАПА · БОЛЕЗНЬ АГЕНТА',
+      legend: this.stage.bossLegend,
+      sprite: this.stage.enemy,
     }
-  }
-
-  private collectToken(t: Token): void {
-    t.taken = true
-    this.combo++
-    this.maxCombo = Math.max(this.maxCombo, this.combo)
-    this.updateMultiplier()
-    this.tokens++
-    const boostFactor = this.boostT > 0 ? 2 : 1
-    const val = (t.golden ? GOLDEN_VALUE : TOKEN_VALUE) * this.effectiveMultiplier() * this.flowBonus() * boostFactor
-    this.addScore(Math.round(val), this.laneX(t.lane), t.y, `+${Math.round(val)}`, t.golden ? '#ffd447' : this.zone.token)
-    if (t.golden) {
-      this.goldenBoostT = 5
-      gameAudio.golden()
-      this.spawnBurst(this.laneX(t.lane), t.y, '#ffd447', 20)
-      this.shake = Math.min(this.shake + 2.5 * this.unit, 8 * this.unit)
-    } else {
-      gameAudio.token(Math.min(this.combo, 7))
-      this.spawnBurst(t.x, t.y, this.zone.token, 7)
-    }
-  }
-
-  private handlePowers(): void {
-    const r = this.playerSize * 0.8
-    for (const p of this.powers) {
-      if (p.taken) continue
-      if (p.lane === this.laneIndex && Math.abs(p.y - this.playerY) < r) {
-        p.taken = true
-        this.activatePower(p.kind)
-      }
-    }
-  }
-
-  private activatePower(kind: PowerKind): void {
-    const meta = POWER_META[kind]
-    gameAudio.powerup()
-    this.addFloat(this.playerX, this.playerY - 50 * this.unit, `${meta.emoji} ${meta.label}`, meta.color, 1.2, 1.3)
-    this.spawnBurst(this.playerX, this.playerY, meta.color, 18)
-    this.shake = Math.min(this.shake + 3 * this.unit, 9 * this.unit)
-    switch (kind) {
-      case 'shield':
-        this.shieldT = 4
-        this.invincT = Math.max(this.invincT, 4)
-        break
-      case 'magnet':
-        this.magnetT = 5
-        break
-      case 'boost':
-        this.boostT = 3
-        this.targetZoom = this.reduceMotion ? 1 : 0.9
-        break
-      case 'autopilot':
-        this.autopilotT = 4
-        this.invincT = Math.max(this.invincT, 4)
-        break
-      case 'fountain': {
-        for (let i = 0; i < 25; i++) {
-          this.combo++
-          this.tokens++
-        }
-        this.maxCombo = Math.max(this.maxCombo, this.combo)
-        this.updateMultiplier()
-        const val = 25 * TOKEN_VALUE * this.effectiveMultiplier()
-        this.addScore(Math.round(val), this.playerX, this.playerY - 30 * this.unit, `+${Math.round(val)}`, '#ffd447')
-        this.spawnBurst(this.playerX, this.playerY, '#ffd447', 40)
-        break
-      }
-    }
+    this.phaseT = 2.2
+    this.audio.bossIn()
     this.emitStats()
   }
 
-  private handleObstacles(): void {
-    const collH = this.playerSize * 0.7
-    const jumping = this.jumpT > 0.08 && this.jumpT < this.jumpDur - 0.02
-    const sliding = this.slideT > 0
-    const invincible = this.invincT > 0 || this.shieldT > 0 || this.autopilotT > 0
-
-    for (const o of this.obstacles) {
-      if (o.passed) continue
-      const band = o.h / 2 + collH / 2
-      const sameLane = o.lane === this.laneIndex
-      const overlap = Math.abs(o.y - this.playerY) < band
-
-      if (sameLane && overlap) {
-        const avoided = (o.type === 'low' && jumping) || (o.type === 'over' && sliding)
-        if (!avoided) {
-          if (invincible) {
-            // Проходим сквозь: "дебажим" препятствие
-            o.passed = true
-            this.spawnBurst(this.laneX(o.lane), o.y, this.shieldT > 0 ? '#45c9ff' : this.zone.accent, 14)
-            if (this.shieldT > 0)
-              this.addScore(10, this.laneX(o.lane), o.y, '+10', '#45c9ff')
-          } else {
-            this.hit(o)
-            o.passed = true
+  private updateEntities(dt: number): void {
+    for (const b of this.bullets) {
+      b.y += b.vy * dt
+      if (b.vx) b.x += b.vx * dt
+    }
+    this.bullets = this.bullets.filter((b) => b.y > -30)
+    for (const o of this.orbs) {
+      o.x += o.vx * dt
+      o.y += o.vy * dt
+    }
+    this.orbs = this.orbs.filter((o) => o.y < this.H + 30 && o.x > -30 && o.x < this.W + 30)
+    for (const e of this.enemies) {
+      e.flash = Math.max(0, e.flash - dt)
+      e.phase += dt * 3
+      e.y += e.vy * dt
+      if (e.kind === 'slop') e.x = e.baseX + Math.sin(e.phase) * 26 * this.unit
+      else if (e.kind === 'hallu') e.x = e.baseX + Math.sin(e.phase * 1.6) * 48 * this.unit
+      else if (e.kind === 'loop') e.x = e.baseX + Math.cos(e.phase * 2) * 40 * this.unit
+    }
+    this.enemies = this.enemies.filter((e) => e.y < this.H + 60 && e.hp > 0)
+    for (const p of this.pickups) p.y += p.vy * dt
+    this.pickups = this.pickups.filter((p) => p.y < this.H + 40)
+    if (this.boss) {
+      const b = this.boss
+      b.flash = Math.max(0, b.flash - dt)
+      b.phase += dt
+      if (b.y < b.ty) b.y += 70 * this.unit * dt
+      else {
+        b.x = this.W / 2 + Math.sin(b.phase * 0.8) * this.W * 0.28
+        if (this.phaseT <= 0) {
+          b.shootAcc += dt
+          if (b.shootAcc > Math.max(0.75, 1.7 - this.diff() * 0.4 - this.stageIdx * 0.14)) {
+            b.shootAcc = 0
+            const ang = Math.atan2(this.py2 - b.y, this.px2 - b.x)
+            const n = this.stageIdx >= 3 ? 2 : 1
+            for (let i = -n; i <= n; i++) {
+              const a = ang + i * (n === 2 ? 0.17 : 0.22)
+              this.orbs.push({
+                x: b.x,
+                y: b.y + 20 * this.unit,
+                vx: Math.cos(a) * (170 + this.stageIdx * 14) * this.unit,
+                vy: Math.sin(a) * (170 + this.stageIdx * 14) * this.unit,
+              })
+            }
           }
-          continue
-        }
-      }
-
-      // Прошёл мимо -> near-miss?
-      if (o.y > this.playerY + band + 4 * this.unit) {
-        o.passed = true
-        const dodgedSameLane = sameLane && ((o.type === 'low' && jumping) || (o.type === 'over' && sliding))
-        const dodgedSwitch =
-          o.lane === this.prevLane && o.lane !== this.laneIndex && this.laneChangeT > 0
-        if (!invincible && (dodgedSameLane || dodgedSwitch)) {
-          this.nearMiss(o)
+          b.minionAcc += dt
+          if (b.minionAcc > Math.max(2.4, 4.5 - this.stageIdx * 0.4)) {
+            b.minionAcc = 0
+            this.spawnEnemy()
+            this.spawnEnemy()
+          }
         }
       }
     }
   }
 
-  private nearMiss(o: Obstacle): void {
-    this.nearMisses++
-    this.consecutiveNear++
-    this.lastNearT = this.time
-    this.flowMeter = Math.min(1, this.flowMeter + 0.34)
-    this.combo++
-    this.maxCombo = Math.max(this.maxCombo, this.combo)
-    this.updateMultiplier()
-    const boostFactor = this.boostT > 0 ? 2 : 1
-    const val = Math.round(NEARMISS_BONUS * this.effectiveMultiplier() * this.flowBonus() * boostFactor)
-    const label = this.flowActive() ? 'FLOW!' : 'CLOSE!'
-    this.addScore(val, this.laneX(o.lane), this.playerY, `${label} +${val}`, '#7dffd6')
-    gameAudio.nearMiss()
-    if (!this.reduceMotion) this.spawnStreak(this.laneX(o.lane), this.playerY)
+  private collide(): void {
+    const u = this.unit
+    for (const b of this.bullets) {
+      if (b.dead) continue
+      for (const e of this.enemies) {
+        if (e.hp <= 0) continue
+        if (e.kind === 'hallu' && Math.floor(e.phase * 2) % 2 === 1) continue
+        const r = (ENEMY_DEF[e.kind].r * 40 + 8) * u * (e.small ? 0.6 : 1)
+        if (Math.abs(b.x - e.x) < r && Math.abs(b.y - e.y) < r) {
+          b.dead = true
+          this.damageEnemy(e, b.dmg)
+          break
+        }
+      }
+      if (!b.dead && this.boss && this.boss.y > 0) {
+        const bs = this.boss
+        if (Math.abs(b.x - bs.x) < 52 * u && Math.abs(b.y - bs.y) < 40 * u) {
+          b.dead = true
+          this.damageBoss(b.dmg)
+        }
+      }
+    }
+    this.bullets = this.bullets.filter((b) => !b.dead)
+    if (this.invincT <= 0) {
+      for (const e of this.enemies) {
+        if (e.hp <= 0) continue
+        if (Math.hypot(e.x - this.px2, e.y - this.py2) < 34 * u) {
+          e.hp = 0
+          this.burst(e.x, e.y, C.danger, 14)
+          this.hurt()
+          break
+        }
+      }
+      if (this.invincT <= 0) {
+        for (const o of this.orbs) {
+          if (Math.hypot(o.x - this.px2, o.y - this.py2) < 26 * u) {
+            o.y = this.H + 99
+            this.hurt()
+            break
+          }
+        }
+      }
+    }
+    for (const p of this.pickups) {
+      if (Math.hypot(p.x - this.px2, p.y - this.py2) < 42 * u) {
+        p.y = this.H + 99
+        this.takePickup(p.kind)
+      }
+    }
   }
 
-  private hit(o: Obstacle): void {
-    this.lives--
-    this.combo = 0
-    this.multiplier = 1
-    this.consecutiveNear = 0
-    this.flowMeter = 0
+  private damageEnemy(e: Enemy, dmg: number): void {
+    e.hp -= dmg
+    e.flash = 0.08
+    if (e.hp <= 0) {
+      this.kills++
+      this.combo++
+      this.comboT = 3
+      const mult = Math.min(5, 1 + Math.floor(this.combo / 5)) * (this.darkFactory ? 2 : 1)
+      const sc = ENEMY_DEF[e.kind].score * mult
+      this.score += sc
+      this.addFloat(e.x, e.y, `+${sc}`, C.bright, 0.8, 1)
+      this.burst(e.x, e.y, C.danger, 10)
+      this.audio.kill()
+      if (e.kind === 'slop' && !e.small) {
+        for (let i = -1; i <= 1; i += 2)
+          this.enemies.push({
+            kind: 'slop',
+            x: e.x + i * 16 * this.unit,
+            y: e.y,
+            hp: 1,
+            maxHp: 1,
+            vy: e.vy * 1.25,
+            phase: this.rng() * 6,
+            baseX: e.x + i * 16 * this.unit,
+            flash: 0,
+            small: true,
+          })
+      }
+      if (this.rng() < 0.14) this.spawnPickup('barrel', e.x, e.y)
+    }
+  }
+
+  private damageBoss(dmg: number): void {
+    const b = this.boss
+    if (!b) return
+    b.hp -= dmg
+    b.flash = 0.08
+    if (b.hp <= 0) {
+      this.audio.bossDie()
+      this.burst(b.x, b.y, C.gold, 34)
+      this.shake = 10 * this.unit
+      const sc = 1000 * (this.darkFactory ? 2 : 1)
+      this.score += sc
+      this.boss = null
+      this.orbs = []
+      if (this.stageIdx === 5) {
+        this.finish(true)
+        return
+      }
+      this.addFloat(b.x, b.y, `БОСС ПОВЕРЖЕН +${sc}`, C.gold, 1.4, 1.2)
+      if (this.harness.length < 5) this.spawnPickup('harness', b.x, b.y)
+      this.spawnPickup('barrel', b.x - 30 * this.unit, b.y)
+      this.spawnPickup('barrel', b.x + 30 * this.unit, b.y)
+      if (this.stageIdx % 2 === 1) this.spawnPickup('perk_win', b.x, b.y - 20 * this.unit)
+      this.phase = 'clear'
+      this.phaseT = 2.4
+      const refill = Math.round(this.cap() * 0.4)
+      this.tokens = Math.min(this.cap(), this.tokens + refill)
+      this.intro = {
+        kind: 'clear',
+        title: 'ЭТАП ПРОЙДЕН',
+        sub: 'RALPH LOOP · СВЕЖИЙ КОНТЕКСТ',
+        legend: `+${fmtInt(refill)} токенов — контекст перезапущен`,
+        sprite: 'ship',
+      }
+      this.setEmo('happy', 2)
+      this.emitStats()
+    }
+  }
+
+  private hurt(): void {
+    const loss = Math.round(this.cap() * 0.13)
+    this.tokens = Math.max(0, this.tokens - loss)
     this.invincT = 1.2
-    this.hitstop = this.reduceMotion ? 0 : 0.07
-    this.shake = 12 * this.unit
-    gameAudio.crash()
+    this.combo = 0
+    this.shake = 9 * this.unit
+    this.setEmo('hurt', 1)
+    this.audio.hit()
     if (navigator.vibrate) {
       try {
-        navigator.vibrate(120)
+        navigator.vibrate(100)
       } catch {
         /* ignore */
       }
     }
-    this.spawnBurst(this.laneX(o.lane), o.y, '#ff5555', 26)
-    this.addFloat(this.playerX, this.playerY - 40 * this.unit, '-1 ЖИЗНЬ', '#ff5555', 1, 1.2)
+    this.addFloat(this.px2, this.py2 - 44 * this.unit, `−${fmtInt(loss)} токенов`, C.danger, 1, 1.1)
+    if (this.tokens <= 0) this.gameOver()
+  }
+
+  private setEmo(e: Emo, t: number): void {
+    this.emo = e
+    this.emoT = t
+  }
+
+  private takePickup(kind: string): void {
+    const u = this.unit
+    if (kind === 'barrel') {
+      const add = Math.round(this.cap() * 0.16)
+      this.tokens = Math.min(this.cap(), this.tokens + add)
+      this.barrels++
+      this.addFloat(this.px2, this.py2 - 40 * u, `+${fmtInt(add)} токенов`, C.bright, 0.9, 1)
+      this.audio.pickup()
+    } else if (kind === 'doc_agent') {
+      if (this.agentLvl < 3) this.agentLvl++
+      this.addFloat(this.px2, this.py2 - 46 * u, `AGENT.MD · огонь ур.${this.agentLvl}`, C.bright, 1.2, 1.1)
+      this.audio.upgrade()
+    } else if (kind === 'doc_skill') {
+      if (this.skillLvl < 3) this.skillLvl++
+      this.addFloat(this.px2, this.py2 - 46 * u, `SKILL.MD · расход −${100 - Math.round(Math.pow(0.85, this.skillLvl) * 100)}%`, C.blue, 1.2, 1.1)
+      this.audio.upgrade()
+    } else if (kind === 'mini') {
+      if (this.subs < 2) this.subs++
+      this.addFloat(this.px2, this.py2 - 46 * u, `SUBAGENT ×${this.subs}`, C.bright, 1.2, 1.1)
+      this.audio.upgrade()
+    } else if (kind === 'perk_zip') {
+      this.compressT = 18
+      this.addFloat(this.px2, this.py2 - 46 * u, 'СЖАТИЕ КОНТЕКСТА −45%', C.blue, 1.2, 1.1)
+      this.audio.upgrade()
+    } else if (kind === 'perk_win') {
+      if (this.capLevel < 4) {
+        this.capLevel++
+        this.tokens = Math.min(this.cap(), this.tokens + this.cap() * 0.35)
+        this.addFloat(this.px2, this.py2 - 46 * u, `ОКНО → ${capLabel(this.capLevel)} ТОКЕНОВ`, C.gold, 1.3, 1.2)
+      } else {
+        this.tokens = this.cap()
+        this.addFloat(this.px2, this.py2 - 46 * u, 'ОКНО ПОЛНОЕ · РЕФИЛЛ', C.gold, 1, 1)
+      }
+      this.audio.upgrade()
+    } else if (kind === 'harness') {
+      const part = HARNESS[Math.min(this.harness.length, 4)]
+      this.harness.push(part)
+      this.addFloat(this.px2, this.py2 - 52 * u, `ХАРНЕС: ${part}`, C.gold, 1.5, 1.25)
+      this.audio.upgrade()
+      if (this.harness.length >= 5 && !this.darkFactory) {
+        this.darkFactory = true
+        this.intro = {
+          kind: 'dark',
+          title: 'DARK FACTORY',
+          sub: 'ХАРНЕС СОБРАН · СУДЬИ В ДЕЛЕ',
+          legend: 'Судьи стреляют сами. Все очки ×2',
+          sprite: 'ship',
+        }
+        this.phaseT = Math.max(this.phaseT, 2.2)
+        this.shake = 6 * this.unit
+      }
+    }
+    this.setEmo('happy', 0.8)
     this.emitStats()
-    if (this.lives <= 0) this.gameOver()
-  }
-
-  private updateMultiplier(): void {
-    let m = 1
-    for (const step of MULT_STEPS) if (this.combo >= step.c) m = step.m
-    if (m > this.multiplier) {
-      this.multiplier = m
-      gameAudio.multiplierUp()
-      this.addFloat(this.playerX, this.playerY - 70 * this.unit, `×${m}!`, this.zone.accent, 1, 1.5)
-      this.shake = Math.min(this.shake + 2 * this.unit, 7 * this.unit)
-    } else {
-      this.multiplier = m
-    }
-  }
-
-  // --- Автопилот (AI-агент сам проходит участок) ---
-  private autopilot(): void {
-    // Ищем безопасную полосу с ближайшим препятствием; предпочитаем токены
-    const look = this.H * 0.6
-    const laneDanger = [0, 0, 0]
-    const laneToken = [0, 0, 0]
-    for (const o of this.obstacles) {
-      if (o.passed) continue
-      if (o.y < this.playerY && o.y > this.playerY - look) {
-        const dist = this.playerY - o.y
-        if (o.type === 'wall') laneDanger[o.lane] += (look - dist) / look
-      }
-    }
-    for (const t of this.tokenList) {
-      if (t.taken) continue
-      if (t.y < this.playerY && t.y > this.playerY - look) laneToken[t.lane] += 1
-    }
-    let bestLane = this.laneIndex
-    let bestScore = -Infinity
-    for (let i = 0; i < LANES; i++) {
-      const sc = laneToken[i] * 2 - laneDanger[i] * 5 - Math.abs(i - this.laneIndex) * 0.4
-      if (sc > bestScore) {
-        bestScore = sc
-        bestLane = i
-      }
-    }
-    if (bestLane !== this.laneIndex) {
-      this.prevLane = this.laneIndex
-      this.laneIndex = bestLane
-      this.laneChangeT = 0.3
-      this.targetX = this.laneX(bestLane)
-    }
-    // Авто-прыжок/подкат
-    for (const o of this.obstacles) {
-      if (o.passed || o.lane !== this.laneIndex) continue
-      const dist = this.playerY - o.y
-      if (dist > 0 && dist < 60 * this.unit) {
-        if (o.type === 'low' && this.jumpT <= 0) this.jumpT = this.jumpDur
-        if (o.type === 'over' && this.slideT <= 0) this.slideT = this.slideDur
-      }
-    }
-  }
-
-  // --- Очки / частицы / тексты ---
-  private addScore(amount: number, x: number, y: number, text: string, color: string): void {
-    this.scoreFloat += amount
-    if (text) this.addFloat(x, y, text, color, 0.9, 1)
   }
 
   private addFloat(x: number, y: number, text: string, color: string, life: number, scale: number): void {
-    this.floats.push({ x, y, text, color, life, maxLife: life, vy: -50 * this.unit, scale })
+    this.floats.push({ x, y, text, color, life, maxLife: life, vy: -46 * this.unit, scale })
   }
 
-  private spawnBurst(x: number, y: number, color: string, n: number): void {
+  private burst(x: number, y: number, color: string, n: number): void {
     if (this.reduceMotion) n = Math.ceil(n / 3)
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2
-      const sp = randRange(this.rng, 40, 220) * this.unit
+      const sp = (40 + Math.random() * 170) * this.unit
       this.particles.push({
         x,
         y,
         vx: Math.cos(a) * sp,
         vy: Math.sin(a) * sp,
-        life: randRange(this.rng, 0.3, 0.7),
-        maxLife: 0.7,
+        life: 0.25 + Math.random() * 0.35,
+        maxLife: 0.6,
         color,
-        size: randRange(this.rng, 2, 5) * this.unit,
-        gravity: 300 * this.unit,
-        spark: true,
-      })
-    }
-  }
-
-  private spawnStreak(x: number, y: number): void {
-    for (let i = 0; i < 8; i++) {
-      this.particles.push({
-        x: x + randRange(this.rng, -20, 20) * this.unit,
-        y,
-        vx: randRange(this.rng, -20, 20) * this.unit,
-        vy: randRange(this.rng, 200, 400) * this.unit,
-        life: 0.35,
-        maxLife: 0.35,
-        color: '#7dffd6',
-        size: 2 * this.unit,
-        gravity: 0,
-        spark: false,
+        size: (2 + Math.random() * 2) * this.unit,
       })
     }
   }
@@ -915,7 +816,6 @@ export class Engine {
     for (const p of this.particles) {
       p.x += p.vx * dt
       p.y += p.vy * dt
-      p.vy += p.gravity * dt
       p.life -= dt
     }
     this.particles = this.particles.filter((p) => p.life > 0)
@@ -928,55 +828,72 @@ export class Engine {
   }
 
   private gameOver(): void {
+    this.finish(false)
+  }
+
+  private finish(won: boolean): void {
+    if (this.state !== 'playing') return
     this.state = 'gameover'
-    gameAudio.gameOver()
-    gameAudio.stopMusic()
-    this.shake = 14 * this.unit
-    const result: GameResult = {
-      score: Math.floor(this.scoreFloat),
-      tokens: this.tokens,
-      maxCombo: this.maxCombo,
-      nearMisses: this.nearMisses,
-      zoneName: `${this.zone.emoji} ${this.zone.name}`,
-      distance: Math.floor(this.distance / this.unit),
-    }
+    if (won) this.audio.upgrade()
+    else this.audio.gameOver()
+    this.audio.stopMusic()
+    this.shake = 10 * this.unit
+    const base = Math.floor(this.score)
+    const tokenBonus = Math.round((Math.max(0, this.tokens) / this.cap()) * 2000)
+    const harnessBonus = this.harness.length * 600
+    const victoryBonus = won ? 5000 : 0
+    const total = base + tokenBonus + harnessBonus + victoryBonus
+    this.score = total
     this.emitStats()
-    this.onGameOver(result)
+    this.onGameOver({
+      score: total,
+      base,
+      tokenBonus,
+      harnessBonus,
+      victoryBonus,
+      won,
+      kills: this.kills,
+      barrels: this.barrels,
+      stageName: this.stage.name,
+      harness: this.harness.length,
+      darkFactory: this.darkFactory,
+      capLabel: capLabel(this.capLevel),
+      agentLvl: this.agentLvl,
+      subs: this.subs,
+    })
   }
 
   private emitStats(): void {
     this.onStats({
-      score: Math.floor(this.scoreFloat),
+      score: Math.floor(this.score),
       best: this.best,
-      lives: this.lives,
-      multiplier: this.effectiveMultiplier(),
+      tokens: Math.max(0, Math.floor(this.tokens)),
+      cap: this.cap(),
+      capLabel: capLabel(this.capLevel),
+      tokenPct: Math.max(0, Math.min(1, this.tokens / this.cap())),
+      stageName: this.stage.name,
+      stageAccent: this.stage.accent,
+      lap: this.lap > 0 ? 'ПРОД В ОГНЕ' : '',
+      agentLvl: this.agentLvl,
+      skillLvl: this.skillLvl,
+      subs: this.subs,
+      harness: this.harness.slice(),
+      darkFactory: this.darkFactory,
+      compress: this.compressT > 0,
       combo: this.combo,
-      maxCombo: this.maxCombo,
-      zoneName: this.zone.name,
-      zoneShort: this.zone.short,
-      zoneEmoji: this.zone.emoji,
-      lap: lapLabel(this.zoneCounter),
-      flow: this.flowActive(),
-      flowMeter: this.flowMeter,
-      tokens: this.tokens,
-      shieldT: this.shieldT,
-      magnetT: this.magnetT,
-      boostT: this.boostT,
-      autopilotT: this.autopilotT,
-      speedKmh: Math.round((this.baseSpeed / this.unit / 60) * 12),
-      nearMisses: this.nearMisses,
+      boss: this.boss ? { name: this.stage.boss, pct: Math.max(0, this.boss.hp / this.boss.maxHp) } : null,
+      intro: this.intro && this.phaseT > 0 ? this.intro : null,
+      kills: this.kills,
     })
   }
 
-  // --- Рендер ---
+  // ---------- render ----------
   render(): void {
     const ctx = this.ctx
     const { W, H, dpr } = this
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.imageSmoothingEnabled = false
     ctx.clearRect(0, 0, W, H)
-
-    // Тряска + зум (от центра)
     let sx = 0
     let sy = 0
     if (this.shake > 0 && !this.reduceMotion) {
@@ -984,406 +901,250 @@ export class Engine {
       sy = (Math.random() - 0.5) * this.shake
     }
     ctx.save()
-    ctx.translate(W / 2 + sx, H / 2 + sy)
-    ctx.scale(this.zoom, this.zoom)
-    ctx.translate(-W / 2, -H / 2)
-
-    this.drawBackground()
-    this.drawLanes()
-    this.drawTokens()
-    this.drawPowers()
-    this.drawObstacles()
-    this.drawTrail()
+    ctx.translate(Math.round(sx), Math.round(sy))
+    this.drawBg()
+    this.drawPickups()
+    this.drawEnemies()
+    this.drawBoss()
+    this.drawBullets()
     this.drawPlayer()
     this.drawParticles()
     this.drawFloats()
-    this.drawFlowOverlay()
-    this.drawBanner()
-
-    ctx.restore()
-
-    if (this.zoneFlash > 0) {
+    if (this.darkFactory) {
       ctx.save()
-      ctx.globalAlpha = this.zoneFlash
-      ctx.fillStyle = this.zone.accent
-      ctx.fillRect(0, 0, W, H)
+      ctx.globalAlpha = 0.5
+      ctx.fillStyle = C.gold
+      ctx.fillRect(2, 0, 2, H)
+      ctx.fillRect(W - 4, 0, 2, H)
       ctx.restore()
     }
+    ctx.restore()
   }
 
-  private drawBackground(): void {
+  private drawBg(): void {
     const ctx = this.ctx
     const { W, H } = this
     const g = ctx.createLinearGradient(0, 0, 0, H)
-    g.addColorStop(0, this.zone.bgTop)
-    g.addColorStop(1, this.zone.bgBottom)
+    g.addColorStop(0, this.stage.tint)
+    g.addColorStop(0.6, C.bg0)
+    g.addColorStop(1, C.bg0)
     ctx.fillStyle = g
     ctx.fillRect(0, 0, W, H)
-
-    // Крупные пиксельные силуэты серверного города.
-    const skylineScroll = (this.distance * 0.08) % 32
     ctx.save()
-    ctx.globalAlpha = 0.34
-    for (let i = 0; i < 11; i++) {
-      const bw = 24 + ((i * 17) % 32)
-      const bh = 60 + ((i * 43) % 150)
-      const bx = (i * 71 - skylineScroll * (i % 2 ? 0.35 : 0.2)) % (W + 80) - 40
-      const by = H * 0.42 - bh
-      ctx.fillStyle = i % 2 ? '#07152b' : this.zone.bgTop
-      ctx.fillRect(Math.floor(bx / 4) * 4, Math.floor(by / 4) * 4, bw, bh)
-      ctx.fillStyle = this.zone.grid
-      for (let wy = by + 12; wy < by + bh - 8; wy += 16) {
-        ctx.fillRect(Math.floor((bx + 7) / 4) * 4, Math.floor(wy / 4) * 4, 4, 5)
+    ctx.globalAlpha = 0.22
+    ctx.fillStyle = C.steel
+    const scroll = (this.distance * 0.6) % 48
+    for (let i = -1; i < H / 48 + 1; i++) {
+      for (let j = 0; j < 4; j++) {
+        const px3 = ((j * 113 + i * 59) % (W - 12)) + 6
+        ctx.fillRect(Math.round(px3), Math.round(i * 48 + scroll), 2, 2)
       }
     }
-    ctx.restore()
-
-    // Параллакс "звёзды/биты".
-    ctx.save()
-    ctx.globalAlpha = 0.65
-    const scroll = (this.distance * 0.3) % 40
-    ctx.fillStyle = this.zone.grid
-    for (let i = -1; i < H / 40 + 1; i++) {
-      for (let j = 0; j < 5; j++) {
-        const px = ((j * 97 + i * 53) % (W - 10)) + 5
-        const py = i * 40 + scroll
-        const bit = (i + j) % 4 === 0 ? 4 : 2
-        ctx.fillRect(Math.floor(px / 2) * 2, Math.floor(py / 2) * 2, bit, bit)
-      }
-    }
+    ctx.globalAlpha = 0.1
+    ctx.fillStyle = this.stage.accent
+    const s2 = (this.distance * 1.4) % 160
+    for (let y = -160 + s2; y < H; y += 160) ctx.fillRect(0, Math.round(y), W, 2)
     ctx.restore()
   }
 
-  private drawLanes(): void {
+  private drawBullets(): void {
     const ctx = this.ctx
-    const { W, H } = this
-    ctx.save()
-    ctx.strokeStyle = this.zone.grid
-    ctx.lineWidth = 3
-    ctx.setLineDash([12, 8])
-    ctx.lineDashOffset = this.distance % 20
-    for (let i = 1; i < LANES; i++) {
-      const x = this.laneWidth() * i
-      ctx.beginPath()
-      ctx.moveTo(x, 0)
-      ctx.lineTo(x, H)
-      ctx.stroke()
+    for (const b of this.bullets) {
+      ctx.fillStyle = b.sub ? C.cyan : C.bright
+      const w = b.dmg > 1 ? 6 : 4
+      ctx.fillRect(Math.round(b.x - w / 2), Math.round(b.y - 8), w, 12)
     }
-    // Горизонтальные "шпалы" конвейера, скроллятся
-    ctx.setLineDash([])
-    const scroll = this.distance % 56
-    ctx.globalAlpha = 0.42
-    for (let y = -56 + scroll; y < H; y += 56) {
-      for (let x = 0; x < W; x += 16) {
-        ctx.fillStyle = (x / 16) % 2 === 0 ? this.zone.grid : 'rgba(255,255,255,0.025)'
-        ctx.fillRect(x, Math.floor(y / 4) * 4, 10, 4)
+    for (const o of this.orbs) {
+      ctx.fillStyle = C.danger
+      ctx.fillRect(Math.round(o.x - 5), Math.round(o.y - 5), 10, 10)
+      ctx.fillStyle = C.white
+      ctx.fillRect(Math.round(o.x - 2), Math.round(o.y - 2), 4, 4)
+    }
+  }
+
+  private enemyMap(e: { kind: string; phase: number }): string[] {
+    const fr = Math.floor(e.phase * 4) % 2
+    if (e.kind === 'slop') return fr ? MAPS.slop2 : MAPS.slop1
+    if (e.kind === 'loop') return fr ? MAPS.loop2 : MAPS.loop1
+    if (e.kind === 'olddev') return MAPS.olddev
+    if (e.kind === 'legacy') return MAPS.legacy
+    if (e.kind === 'hallu') return MAPS.hallu
+    return MAPS.rot
+  }
+
+  private drawEnemies(): void {
+    const ctx = this.ctx
+    for (const e of this.enemies) {
+      if (e.hp <= 0) continue
+      const map = this.enemyMap(e)
+      let p = Math.max(2, Math.round(this.pu() * (e.small ? 0.7 : 1.05)))
+      if (e.kind === 'legacy') p = Math.max(2, Math.round(this.pu() * 1.15))
+      const mw = map[0].length * p
+      const mh = map.length * p
+      ctx.save()
+      if (e.kind === 'hallu') {
+        const vis = Math.floor(e.phase * 2) % 2 === 0
+        ctx.globalAlpha = vis ? 1 : 0.22
       }
-    }
-    ctx.restore()
-    void W
-  }
-
-  private drawTokens(): void {
-    const ctx = this.ctx
-    for (const t of this.tokenList) {
-      if (t.taken) continue
-      const x = t.x
-      const size = this.playerSize * (t.golden ? 0.42 : 0.32)
-      const pulse = 1 + Math.sin(this.time * 6 + t.y * 0.05) * 0.12
-      ctx.save()
-      ctx.translate(x, t.y)
-      ctx.rotate(Math.round(this.time * 8) * Math.PI / 8)
-      ctx.shadowBlur = 12
-      ctx.shadowColor = t.golden ? '#ffd447' : this.zone.token
-      ctx.fillStyle = t.golden ? '#ffd447' : this.zone.token
-      const s = size * pulse
-      ctx.beginPath()
-      ctx.moveTo(0, -s)
-      ctx.lineTo(s, 0)
-      ctx.lineTo(0, s)
-      ctx.lineTo(-s, 0)
-      ctx.closePath()
-      ctx.fill()
-      ctx.fillStyle = '#fff'
-      ctx.fillRect(-s * 0.34, -s * 0.42, Math.max(3, s * 0.18), Math.max(3, s * 0.18))
-      ctx.restore()
-    }
-  }
-
-  private drawPowers(): void {
-    const ctx = this.ctx
-    for (const p of this.powers) {
-      if (p.taken) continue
-      const x = this.laneX(p.lane)
-      const meta = POWER_META[p.kind]
-      const r = this.playerSize * 0.5
-      const pulse = 1 + Math.sin(this.time * 5) * 0.1
-      ctx.save()
-      ctx.translate(x, p.y)
-      ctx.shadowBlur = 22
-      ctx.shadowColor = meta.color
-      ctx.fillStyle = 'rgba(0,0,0,0.55)'
-      ctx.beginPath()
-      ctx.arc(0, 0, r * pulse, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.lineWidth = 3
-      ctx.strokeStyle = meta.color
-      ctx.stroke()
-      ctx.shadowBlur = 0
-      ctx.font = `${Math.round(r * 1.1)}px serif`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText(meta.emoji, 0, r * 0.05)
-      ctx.restore()
-    }
-  }
-
-  private drawObstacles(): void {
-    const ctx = this.ctx
-    for (const o of this.obstacles) {
-      if (o.passed && o.y > this.playerY) continue
-      const x = this.laneX(o.lane)
-      if (o.blink && Math.floor(this.time * 6) % 2 === 0) continue // мигающие
-      ctx.save()
-      ctx.translate(x, o.y)
-      ctx.shadowBlur = 14
-      const color = o.type === 'wall' ? this.zone.obstacle : o.type === 'over' ? '#ff77aa' : '#ff9f45'
-      ctx.shadowColor = color
-      ctx.fillStyle = color
-      const w = o.w
-      const h = o.h
-      if (o.type === 'wall') {
-        ctx.fillRect(-w / 2, -h / 2, w, h)
-        ctx.fillStyle = 'rgba(3,8,20,.55)'
-        for (let yy = -h / 2 + 7; yy < h / 2; yy += 12) {
-          for (let xx = -w / 2 + 6 + ((yy / 12) % 2) * 7; xx < w / 2 - 4; xx += 15) {
-            ctx.fillRect(xx, yy, 8, 4)
-          }
+      const bob = e.kind === 'olddev' ? Math.round(Math.sin(e.phase * 3) * 1.5) * 2 : 0
+      drawMap(ctx, map, Math.round(e.x - mw / 2), Math.round(e.y - mh / 2 + bob), p)
+      if (e.flash > 0) {
+        ctx.globalAlpha = 0.75
+        ctx.fillStyle = C.white
+        ctx.fillRect(Math.round(e.x - mw / 2), Math.round(e.y - mh / 2), mw, mh)
+      }
+      if (e.maxHp > 1) {
+        ctx.globalAlpha = 1
+        for (let i = 0; i < e.maxHp; i++) {
+          ctx.fillStyle = i < e.hp ? C.danger : 'rgba(230,242,238,0.25)'
+          ctx.fillRect(Math.round(e.x - mw / 2 + i * 8), Math.round(e.y - mh / 2 - 7), 6, 3)
         }
-      } else if (o.type === 'low') {
-        // низкое препятствие (прыжок): пилообразное
-        ctx.beginPath()
-        ctx.moveTo(-w / 2, h / 2)
-        const teeth = 4
-        for (let i = 0; i <= teeth; i++) {
-          const tx = -w / 2 + (w / teeth) * i
-          ctx.lineTo(tx, i % 2 === 0 ? -h / 2 : h / 4)
-        }
-        ctx.lineTo(w / 2, h / 2)
-        ctx.closePath()
-        ctx.fill()
-      } else {
-        // overhead (подкат): висит сверху
-        ctx.fillRect(-w / 2, -h / 2 - this.playerSize * 0.5, w, h)
-        ctx.fillStyle = 'rgba(255,255,255,0.25)'
-        for (let i = 0; i < 3; i++) ctx.fillRect(-w / 2 + 6 + i * (w / 3), -h / 2 - this.playerSize * 0.5 + 4, w / 4, 4)
       }
       ctx.restore()
     }
   }
 
-  private drawTrail(): void {
-    if (this.reduceMotion) return
+  private drawBoss(): void {
+    if (!this.boss) return
     const ctx = this.ctx
+    const b = this.boss
+    const map = this.enemyMap({ kind: this.stage.enemy, phase: b.phase * 2 })
+    const p = Math.max(3, Math.round(this.pu() * 2.1))
+    const mw = map[0].length * p
+    const mh = map.length * p
     ctx.save()
-    for (const t of this.trail) {
-      const a = t.life / 0.3
-      ctx.globalAlpha = a * 0.4 * (this.flowActive() ? 1.4 : 1)
-      ctx.fillStyle = this.flowActive() ? '#7dffd6' : this.zone.accent
-      ctx.beginPath()
-      ctx.arc(t.x, t.y + this.jumpOffset(), this.playerSize * 0.4 * a, 0, Math.PI * 2)
-      ctx.fill()
+    drawMap(ctx, map, Math.round(b.x - mw / 2), Math.round(b.y - mh / 2), p)
+    ctx.fillStyle = C.gold
+    for (let i = 0; i < 3; i++) ctx.fillRect(Math.round(b.x - 12 + i * 10), Math.round(b.y - mh / 2 - 10), 5, 8)
+    if (b.flash > 0) {
+      ctx.globalAlpha = 0.7
+      ctx.fillStyle = C.white
+      ctx.fillRect(Math.round(b.x - mw / 2), Math.round(b.y - mh / 2), mw, mh)
     }
     ctx.restore()
   }
 
-  private jumpOffset(): number {
-    if (this.jumpT <= 0) return 0
-    const p = 1 - this.jumpT / this.jumpDur // 0..1
-    const arc = Math.sin(p * Math.PI)
-    return -arc * this.playerSize * 1.4
+  private drawPickups(): void {
+    const ctx = this.ctx
+    for (const pk of this.pickups) {
+      const map = MAPS[pk.kind] || MAPS.barrel
+      const p = Math.max(2, Math.round(this.pu() * 0.9))
+      const mw = map[0].length * p
+      const mh = map.length * p
+      const bob = Math.round(Math.sin(this.time * 4 + pk.x) * 1.5) * 2
+      drawMap(ctx, map, Math.round(pk.x - mw / 2), Math.round(pk.y - mh / 2 + bob), p)
+    }
   }
 
   private drawPlayer(): void {
     const ctx = this.ctx
-    const x = this.playerX
-    const baseY = this.playerY
-    const jo = this.jumpOffset()
-    const sliding = this.slideT > 0
-    const size = this.playerSize
-    const invBlink = this.invincT > 0 && this.shieldT <= 0 && this.autopilotT <= 0 && Math.floor(this.time * 12) % 2 === 0
-
-    // Тень (уменьшается в прыжке)
+    if (this.invincT > 0 && Math.floor(this.time * 12) % 2 === 0 && this.state === 'playing') return
+    const p = this.pu()
+    const map = MAPS.ship
+    const mw = map[0].length * p
+    const mh = map.length * p
+    const tilt = Math.max(-0.16, Math.min(0.16, (this.tx - this.px2) * 0.004))
     ctx.save()
-    const shadowScale = 1 - Math.abs(jo) / (size * 1.4) * 0.6
-    ctx.globalAlpha = 0.35 * shadowScale
-    ctx.fillStyle = '#000'
-    ctx.beginPath()
-    ctx.ellipse(x, baseY + size * 0.55, size * 0.4 * shadowScale, size * 0.14 * shadowScale, 0, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.restore()
-
-    if (invBlink) return
-
-    ctx.save()
-    ctx.translate(x, baseY + jo)
-    const tilt = (this.targetX - this.playerX) * 0.006
+    ctx.translate(Math.round(this.px2), Math.round(this.py2))
     ctx.rotate(tilt)
-    if (sliding) ctx.scale(1.15, 0.6)
-
-    // Щит
-    if (this.shieldT > 0) {
-      ctx.save()
-      ctx.globalAlpha = 0.35 + Math.sin(this.time * 8) * 0.1
-      ctx.shadowBlur = 20
-      ctx.shadowColor = '#45c9ff'
-      ctx.strokeStyle = '#45c9ff'
-      ctx.lineWidth = 3
-      ctx.beginPath()
-      ctx.arc(0, 0, size * 0.8, 0, Math.PI * 2)
-      ctx.stroke()
-      ctx.restore()
+    const fr = Math.floor(this.time * 14) % 2
+    ctx.fillStyle = C.cyan
+    ctx.fillRect(-p * 2.5, mh / 2 - p, p * 2, fr ? p * 3 : p * 2)
+    ctx.fillRect(p * 0.5, mh / 2 - p, p * 2, fr ? p * 2 : p * 3)
+    ctx.fillStyle = C.white
+    ctx.fillRect(-p * 2, mh / 2 - p, p, p)
+    ctx.fillRect(p, mh / 2 - p, p, p)
+    drawMap(ctx, map, -mw / 2, -mh / 2, p)
+    this.drawFace(ctx, -mw / 2, -mh / 2, p)
+    if (this.compressT > 0) {
+      ctx.globalAlpha = 0.4 + Math.sin(this.time * 6) * 0.12
+      ctx.strokeStyle = C.blue
+      ctx.lineWidth = 2
+      ctx.strokeRect(-mw / 2 - 2 * p, -mh / 2 - 2 * p, mw + 4 * p, mh + 4 * p)
+      ctx.globalAlpha = 1
     }
-
-    const glow = this.flowActive() ? '#7dffd6' : this.autopilotT > 0 ? '#21e08a' : this.zone.accent
-    ctx.shadowBlur = 18
-    ctx.shadowColor = glow
-
-    // Тело робота (Гена), собранное из крупных 8-bit кластеров.
-    const px = Math.max(3, Math.round(size / 14))
-    ctx.fillStyle = '#dfffee'
-    ctx.fillRect(-size * 0.36, -size * 0.5, size * 0.72, size)
-    ctx.fillRect(-size * 0.46, -size * 0.36, size * 0.92, size * 0.62)
-    ctx.fillStyle = this.zone.accent
-    ctx.fillRect(-size * 0.36, size * 0.34, size * 0.72, size * 0.16)
-    ctx.fillRect(-size * 0.46, size * 0.12, px * 2, size * 0.18)
-    ctx.fillRect(size * 0.46 - px * 2, size * 0.12, px * 2, size * 0.18)
-    ctx.fillStyle = '#fff'
-    ctx.fillRect(-size * 0.28, -size * 0.47, size * 0.38, px * 2)
-
-    // Экран-лицо.
-    ctx.shadowBlur = 0
-    ctx.fillStyle = '#04121f'
-    ctx.fillRect(-size * 0.31, -size * 0.31, size * 0.62, size * 0.47)
-    ctx.fillStyle = '#0b2b3d'
-    ctx.fillRect(-size * 0.25, -size * 0.25, size * 0.5, px)
-
-    // Глаза
-    ctx.fillStyle = glow
-    const eyeY = -size * 0.08
-    const blinkEye = Math.floor(this.time * 1.2) % 5 === 0 ? 0.3 : 1
-    const eyeH = Math.max(px, size * 0.12 * blinkEye)
-    ctx.fillRect(-size * 0.19, eyeY - eyeH / 2, px * 2, eyeH)
-    ctx.fillRect(size * 0.19 - px * 2, eyeY - eyeH / 2, px * 2, eyeH)
-    if (this.flowActive() || this.autopilotT > 0) {
-      // улыбка в потоке
-      ctx.fillRect(-px * 2, size * 0.03, px, px)
-      ctx.fillRect(-px, size * 0.03 + px, px * 2, px)
-      ctx.fillRect(px, size * 0.03, px, px)
-    }
-
-    // Антенна
-    ctx.fillStyle = this.zone.accent
-    ctx.fillRect(-px / 2, -size * 0.72, px, size * 0.24)
-    ctx.fillStyle = glow
-    ctx.shadowBlur = 12
-    ctx.shadowColor = glow
-    ctx.fillRect(-px * 1.2, -size * 0.79, px * 2.4, px * 2.4)
-
     ctx.restore()
+    for (let i = 0; i < this.subs; i++) {
+      const off = (i === 0 ? -38 : 38) * this.unit
+      const sp = Math.max(2, Math.round(p * 0.7))
+      const sm = MAPS.mini
+      const bob = Math.round(Math.sin(this.time * 5 + i * 2) * 1.5) * 2
+      drawMap(ctx, sm, Math.round(this.px2 + off - (sm[0].length * sp) / 2), Math.round(this.py2 - (sm.length * sp) / 2 + bob), sp)
+    }
+    if (this.darkFactory) {
+      for (let i = 0; i < 2; i++) {
+        const off = (i === 0 ? -64 : 64) * this.unit
+        const sp = Math.max(2, Math.round(p * 0.6))
+        const sm = MAPS.mini
+        ctx.save()
+        drawMap(ctx, sm, Math.round(this.px2 + off - (sm[0].length * sp) / 2), Math.round(this.py2 - 14 * this.unit), sp)
+        ctx.fillStyle = C.gold
+        ctx.fillRect(Math.round(this.px2 + off - sp), Math.round(this.py2 - 14 * this.unit - sp * 2), sp * 2, sp)
+        ctx.restore()
+      }
+    }
+  }
+
+  private drawFace(ctx: CanvasRenderingContext2D, dx: number, dy: number, p: number): void {
+    const ex = (c2: number) => dx + c2 * p
+    const ey = (r: number) => dy + r * p
+    const glow = C.bright
+    ctx.fillStyle = glow
+    if (this.emo === 'happy') {
+      ctx.fillRect(ex(4), ey(4), p, p)
+      ctx.fillRect(ex(7), ey(4), p, p)
+      ctx.fillRect(ex(4), ey(6), p, p)
+      ctx.fillRect(ex(7), ey(6), p, p)
+      ctx.fillRect(ex(5), ey(6) + p * 0.5, p * 2, p * 0.6)
+    } else if (this.emo === 'worry') {
+      ctx.fillRect(ex(4), ey(5), p * 1.4, p * 0.7)
+      ctx.fillRect(ex(7), ey(5), p * 1.4, p * 0.7)
+      ctx.fillStyle = C.gold
+      ctx.fillRect(ex(5), ey(6) + p * 0.4, p * 2, p * 0.6)
+    } else if (this.emo === 'hurt') {
+      ctx.fillStyle = C.danger
+      ctx.fillRect(ex(4), ey(4), p, p)
+      ctx.fillRect(ex(5), ey(5), p, p)
+      ctx.fillRect(ex(4), ey(6) - p * 0.4, p, p)
+      ctx.fillRect(ex(7), ey(4), p, p)
+      ctx.fillRect(ex(8) - p, ey(5), p, p)
+      ctx.fillRect(ex(7), ey(6) - p * 0.4, p, p)
+    } else {
+      const blink = Math.floor(this.time * 1.3) % 5 === 0 ? 0.35 : 1
+      ctx.fillRect(ex(4), ey(4) + (p * (1 - blink)) / 2, p, Math.max(p * 0.3, p * 1.6 * blink))
+      ctx.fillRect(ex(7), ey(4) + (p * (1 - blink)) / 2, p, Math.max(p * 0.3, p * 1.6 * blink))
+    }
   }
 
   private drawParticles(): void {
     const ctx = this.ctx
     for (const p of this.particles) {
-      const a = p.life / p.maxLife
-      ctx.save()
-      ctx.globalAlpha = Math.max(0, a)
+      ctx.globalAlpha = Math.max(0, p.life / p.maxLife)
       ctx.fillStyle = p.color
-      if (p.spark) {
-        ctx.shadowBlur = 8
-        ctx.shadowColor = p.color
-      }
-      ctx.beginPath()
-      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.restore()
+      const s = Math.max(2, Math.round(p.size))
+      ctx.fillRect(Math.round(p.x), Math.round(p.y), s, s)
     }
+    ctx.globalAlpha = 1
   }
 
   private drawFloats(): void {
     const ctx = this.ctx
     for (const f of this.floats) {
-      const a = Math.min(1, f.life / f.maxLife)
       ctx.save()
-      ctx.globalAlpha = a
-      ctx.font = `bold ${Math.round(18 * this.unit * f.scale)}px 'Courier New', ui-monospace, monospace`
-      ctx.fillStyle = f.color
+      ctx.globalAlpha = Math.min(1, f.life / f.maxLife)
+      const fs = Math.round(15 * this.unit * f.scale)
+      ctx.font = `800 ${fs}px Manrope, system-ui, sans-serif`
       ctx.textAlign = 'center'
-      ctx.shadowBlur = 8
-      ctx.shadowColor = f.color
+      ctx.lineWidth = 4
+      ctx.strokeStyle = C.outline
+      ctx.strokeText(f.text, f.x, f.y)
+      ctx.fillStyle = f.color
       ctx.fillText(f.text, f.x, f.y)
       ctx.restore()
     }
   }
 
-  private drawFlowOverlay(): void {
-    if (!this.flowActive() || this.reduceMotion) return
-    const ctx = this.ctx
-    const { W, H } = this
-    ctx.save()
-    const pulse = 0.3 + Math.sin(this.time * 8) * 0.15
-    ctx.globalAlpha = pulse
-    ctx.strokeStyle = '#7dffd6'
-    ctx.lineWidth = 8
-    ctx.shadowBlur = 30
-    ctx.shadowColor = '#7dffd6'
-    ctx.strokeRect(6, 6, W - 12, H - 12)
-    ctx.restore()
-  }
-
-  private drawBanner(): void {
-    if (this.bannerT <= 0) return
-    const ctx = this.ctx
-    const { W, H } = this
-    const a = Math.min(1, this.bannerT / 0.4)
-    ctx.save()
-    ctx.globalAlpha = a
-    ctx.textAlign = 'center'
-    const lap = lapLabel(this.zoneCounter)
-    ctx.font = `bold ${Math.round(34 * this.unit)}px 'Courier New', ui-monospace, monospace`
-    ctx.fillStyle = this.zone.accent
-    ctx.shadowBlur = 20
-    ctx.shadowColor = this.zone.accent
-    ctx.fillText(`${this.zone.emoji} ${this.zone.name.toUpperCase()}`, W / 2, H * 0.32)
-    if (lap) {
-      ctx.font = `bold ${Math.round(16 * this.unit)}px 'Courier New', ui-monospace, monospace`
-      ctx.fillStyle = '#ff5555'
-      ctx.fillText(lap, W / 2, H * 0.32 + 30 * this.unit)
-    }
-    ctx.restore()
-  }
-
-  private roundRect(x: number, y: number, w: number, h: number, r: number): void {
-    const ctx = this.ctx
-    ctx.beginPath()
-    ctx.moveTo(x + r, y)
-    ctx.arcTo(x + w, y, x + w, y + h, r)
-    ctx.arcTo(x + w, y + h, x, y + h, r)
-    ctx.arcTo(x, y + h, x, y, r)
-    ctx.arcTo(x, y, x + w, y, r)
-    ctx.closePath()
-  }
-
-  // Публично для превью в меню
   renderStatic(): void {
-    this.zone = getZone(0)
-    this.playerX = this.laneX(1)
-    this.targetX = this.playerX
     this.render()
-  }
-
-  getInventory(): PowerKind | null {
-    return this.inventory
   }
 }

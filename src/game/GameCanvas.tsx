@@ -5,52 +5,48 @@ import { Engine, GameResult, Stats } from './engine'
 export interface GameControls {
   start: (seed: number) => void
   stop: () => void
-  moveLeft: () => void
-  moveRight: () => void
-  jump: () => void
-  slide: () => void
-  usePowerup: () => void
+  setTarget: (x: number, y: number) => void
+  nudge: (dx: number, dy: number) => void
+  setStartStage: (i: number) => void
   renderStatic: () => void
+  countdownTick: (go: boolean) => void
+  resumeAudio: () => void
 }
 
 interface Props {
-  active: boolean // принимать ли ввод (state === playing)
+  active: boolean // играем ли сейчас (принимать ввод перетаскивания)
   reduceMotion: boolean
+  muted: boolean
   best: number
   onStats: (s: Stats) => void
   onGameOver: (r: GameResult) => void
 }
 
-const SWIPE_THRESHOLD = 24
-
 export const GameCanvas = forwardRef<GameControls, Props>(
-  ({ active, reduceMotion, best, onStats, onGameOver }, ref) => {
+  ({ active, reduceMotion, muted, best, onStats, onGameOver }, ref) => {
     const canvasRef = useRef<HTMLCanvasElement>(null)
     const wrapRef = useRef<HTMLDivElement>(null)
     const engineRef = useRef<Engine | null>(null)
     const activeRef = useRef(active)
-    const pointer = useRef<{ x: number; y: number; t: number; moved: boolean } | null>(null)
-    const lastTapRef = useRef(0)
+    const dragging = useRef(false)
 
     activeRef.current = active
 
-    // Инициализация движка + ресайз
     useEffect(() => {
       const canvas = canvasRef.current
       const wrap = wrapRef.current
       if (!canvas || !wrap) return
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      const engine = new Engine(ctx)
+      const engine = new Engine(canvas)
       engine.onStats = onStats
       engine.onGameOver = onGameOver
       engine.setBest(best)
       engine.setReduceMotion(reduceMotion)
+      engine.setMuted(muted)
       engineRef.current = engine
 
       const doResize = () => {
         const rect = wrap.getBoundingClientRect()
-        const dpr = Math.min(window.devicePixelRatio || 1, 2.5)
+        const dpr = Math.min(window.devicePixelRatio || 1, 2)
         engine.resize(rect.width, rect.height, dpr)
         if (engine.state !== 'playing') engine.render()
       }
@@ -64,9 +60,23 @@ export const GameCanvas = forwardRef<GameControls, Props>(
       }
       document.addEventListener('visibilitychange', onVisibility)
 
+      const onKey = (e: KeyboardEvent) => {
+        const eng = engineRef.current
+        if (!eng || !activeRef.current) return
+        const st = 34
+        if (e.key === 'ArrowLeft' || e.key === 'a') eng.nudge(-st, 0)
+        else if (e.key === 'ArrowRight' || e.key === 'd') eng.nudge(st, 0)
+        else if (e.key === 'ArrowUp' || e.key === 'w') {
+          e.preventDefault()
+          eng.nudge(0, -st)
+        } else if (e.key === 'ArrowDown' || e.key === 's') eng.nudge(0, st)
+      }
+      window.addEventListener('keydown', onKey)
+
       return () => {
         ro.disconnect()
         document.removeEventListener('visibilitychange', onVisibility)
+        window.removeEventListener('keydown', onKey)
         engine.stop()
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -75,132 +85,54 @@ export const GameCanvas = forwardRef<GameControls, Props>(
     useEffect(() => {
       engineRef.current?.setReduceMotion(reduceMotion)
     }, [reduceMotion])
-
+    useEffect(() => {
+      engineRef.current?.setMuted(muted)
+    }, [muted])
     useEffect(() => {
       engineRef.current?.setBest(best)
     }, [best])
 
-    // Клавиатура (desktop / spectator)
-    useEffect(() => {
-      const onKey = (e: KeyboardEvent) => {
-        const eng = engineRef.current
-        if (!eng || !activeRef.current) return
-        switch (e.key) {
-          case 'ArrowLeft':
-          case 'a':
-          case 'A':
-            eng.moveLeft()
-            break
-          case 'ArrowRight':
-          case 'd':
-          case 'D':
-            eng.moveRight()
-            break
-          case 'ArrowUp':
-          case 'w':
-          case 'W':
-          case ' ':
-            e.preventDefault()
-            eng.jump()
-            break
-          case 'ArrowDown':
-          case 's':
-          case 'S':
-            eng.slide()
-            break
-          case 'Shift':
-            eng.usePowerup()
-            break
-        }
-      }
-      window.addEventListener('keydown', onKey)
-      return () => window.removeEventListener('keydown', onKey)
-    }, [])
-
     useImperativeHandle(ref, () => ({
       start: (seed: number) => engineRef.current?.start(seed),
       stop: () => engineRef.current?.stop(),
-      moveLeft: () => engineRef.current?.moveLeft(),
-      moveRight: () => engineRef.current?.moveRight(),
-      jump: () => engineRef.current?.jump(),
-      slide: () => engineRef.current?.slide(),
-      usePowerup: () => engineRef.current?.usePowerup(),
+      setTarget: (x: number, y: number) => engineRef.current?.setTarget(x, y),
+      nudge: (dx: number, dy: number) => engineRef.current?.nudge(dx, dy),
+      setStartStage: (i: number) => engineRef.current?.setStartStage(i),
       renderStatic: () => engineRef.current?.renderStatic(),
+      countdownTick: (go: boolean) => engineRef.current?.audio.countdownTick(go),
+      resumeAudio: () => engineRef.current?.audio.resume(),
     }))
 
-    // --- Ввод: свайпы/тапы ---
-    const handleDown = (x: number, y: number) => {
-      pointer.current = { x, y, t: performance.now(), moved: false }
-    }
-
-    const handleMove = (x: number, y: number) => {
-      const p = pointer.current
-      const eng = engineRef.current
-      if (!p || !eng || !activeRef.current) return
-      const dx = x - p.x
-      const dy = y - p.y
-      if (p.moved) return
-      if (Math.abs(dx) > SWIPE_THRESHOLD || Math.abs(dy) > SWIPE_THRESHOLD) {
-        p.moved = true
-        if (Math.abs(dx) > Math.abs(dy)) {
-          if (dx > 0) eng.moveRight()
-          else eng.moveLeft()
-        } else if (dy < 0) {
-          eng.jump()
-        } else {
-          eng.slide()
-        }
-      }
-    }
-
-    const handleUp = (x: number, y: number) => {
-      const p = pointer.current
-      const eng = engineRef.current
-      pointer.current = null
-      if (!p || !eng || !activeRef.current) return
-      if (p.moved) return
-      // Это тап (без свайпа)
-      const now = performance.now()
-      if (now - lastTapRef.current < 280) {
-        eng.usePowerup()
-        lastTapRef.current = 0
-        return
-      }
-      lastTapRef.current = now
-      // Тап по левой/правой трети = смена полосы (запасной жест)
-      const rect = canvasRef.current?.getBoundingClientRect()
-      const w = rect?.width ?? window.innerWidth
-      const relX = x - (rect?.left ?? 0)
-      const relY = y - (rect?.top ?? 0)
-      const h = rect?.height ?? window.innerHeight
-      if (relY < h * 0.32) {
-        eng.jump()
-      } else if (relX < w * 0.34) {
-        eng.moveLeft()
-      } else if (relX > w * 0.66) {
-        eng.moveRight()
-      } else {
-        eng.jump()
-      }
+    const toLocal = (clientX: number, clientY: number) => {
+      const rect = wrapRef.current?.getBoundingClientRect()
+      return { x: clientX - (rect?.left ?? 0), y: clientY - (rect?.top ?? 0) }
     }
 
     return (
       <div
         ref={wrapRef}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          touchAction: 'none',
-          overflow: 'hidden',
-        }}
+        style={{ position: 'absolute', inset: 0, touchAction: 'none', overflow: 'hidden' }}
         onPointerDown={(e) => {
           ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
-          handleDown(e.clientX, e.clientY)
+          dragging.current = true
+          if (activeRef.current) {
+            const p = toLocal(e.clientX, e.clientY)
+            engineRef.current?.setTarget(p.x, p.y - 40)
+          }
         }}
-        onPointerMove={(e) => handleMove(e.clientX, e.clientY)}
-        onPointerUp={(e) => handleUp(e.clientX, e.clientY)}
+        onPointerMove={(e) => {
+          if (!dragging.current || !activeRef.current) return
+          const p = toLocal(e.clientX, e.clientY)
+          engineRef.current?.setTarget(p.x, p.y - 40)
+        }}
+        onPointerUp={() => {
+          dragging.current = false
+        }}
         onPointerCancel={() => {
-          pointer.current = null
+          dragging.current = false
+        }}
+        onPointerLeave={() => {
+          dragging.current = false
         }}
       >
         <canvas

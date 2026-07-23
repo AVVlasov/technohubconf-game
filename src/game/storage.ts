@@ -4,8 +4,8 @@ export interface ScoreEntry {
   name: string
   score: number
   zone: string
-  tokens: number
-  maxCombo: number
+  tokens?: number
+  maxCombo?: number
   date: number
 }
 

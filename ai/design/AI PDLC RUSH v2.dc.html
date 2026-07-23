@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="rush-shooter.js"></script>
+<style>
+html,body{margin:0;padding:0;background:#030B0E;overscroll-behavior:none}
+a{color:#3BD269;text-decoration:none}a:hover{color:#5BE084}
+input::placeholder{color:rgba(230,242,238,0.4)}
+[class*="aip2-i-"]{background-size:contain;background-position:center;background-repeat:no-repeat;image-rendering:pixelated}
+@keyframes aip-pop{0%{transform:scale(.5);opacity:0}70%{transform:scale(1.06)}100%{transform:scale(1);opacity:1}}
+@keyframes aip-count{0%{transform:scale(1.6);opacity:0}25%{opacity:1;transform:scale(1)}80%{opacity:1}100%{transform:scale(.92);opacity:0}}
+@keyframes aip-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+</style>
+</helmet>
+<div style="position:fixed;inset:0;background:#030B0E;display:flex;justify-content:center;font-family:Manrope,sans-serif;color:#F2F8F5;overflow:hidden">
+  <div ref="{{ setFrame }}" onPointerDown="{{ onPointerDown }}" onPointerMove="{{ onPointerMove }}" onPointerUp="{{ onPointerUp }}" onPointerLeave="{{ onPointerUp }}" style="position:relative;width:min(100vw,480px);height:100dvh;overflow:hidden;background:#07171D;touch-action:none">
+    <canvas ref="{{ setCanvas }}" style="position:absolute;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated"></canvas>
+
+    <sc-if value="{{ isPlaying }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="HUD" style="position:absolute;inset:0;pointer-events:none;padding:12px 12px 0;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="background:rgba(5,17,22,0.78);border:1px solid rgba(230,242,238,0.12);border-radius:14px;padding:7px 13px 9px">
+            <div style="font-size:11.5px;font-weight:700;letter-spacing:1.5px;color:rgba(230,242,238,0.62)">ОЧКИ</div>
+            <div style="font-family:Unbounded,sans-serif;font-size:22px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums">{{ scoreFmt }}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+            <div style="display:flex;align-items:center;gap:8px;background:rgba(5,17,22,0.78);border:1px solid rgba(230,242,238,0.12);border-radius:999px;padding:6px 13px">
+              <div style="width:8px;height:8px;border-radius:50%;background:{{ stageAccent }}"></div>
+              <div style="font-size:12.5px;font-weight:700;letter-spacing:0.5px">{{ stageName }}</div>
+            </div>
+            <sc-if value="{{ lapText }}" hint-placeholder-val="{{ false }}">
+              <div style="font-size:11.5px;font-weight:800;letter-spacing:1px;color:#F4574D">{{ lapText }}</div>
+            </sc-if>
+            <sc-if value="{{ isDark }}" hint-placeholder-val="{{ false }}">
+              <div style="font-size:11.5px;font-weight:800;letter-spacing:1.5px;color:#04140C;background:#F2C14E;border-radius:999px;padding:3px 10px">DARK FACTORY ×2</div>
+            </sc-if>
+          </div>
+          <button onClick="{{ onMute }}" style="pointer-events:auto;border:1px solid rgba(230,242,238,0.16);background:rgba(5,17,22,0.78);color:{{ muteColor }};border-radius:999px;padding:8px 12px;font-family:Manrope,sans-serif;font-size:11.5px;font-weight:800;letter-spacing:1px;cursor:pointer" style-active="transform:scale(0.95)">{{ muteLabel }}</button>
+        </div>
+        <div style="background:rgba(5,17,22,0.78);border:1px solid rgba(230,242,238,0.12);border-radius:14px;padding:8px 13px 10px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+            <div style="font-size:11.5px;font-weight:700;letter-spacing:1.5px;color:rgba(230,242,238,0.62)">КОНТЕКСТ · ОКНО {{ capLabel }}</div>
+            <div style="font-size:12.5px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ tokColor }}">{{ tokensFmt }}</div>
+          </div>
+          <div style="margin-top:6px;height:8px;border-radius:4px;background:rgba(230,242,238,0.1);overflow:hidden">
+            <div style="height:100%;border-radius:4px;background:{{ tokColor }};width:{{ tokenBarW }}"></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <div style="display:flex;align-items:center;gap:6px;background:rgba(5,17,22,0.78);border:1px solid rgba(230,242,238,0.16);border-radius:999px;padding:4px 10px 4px 5px">
+            <div class="aip2-i-doc_agent" style="width:20px;height:20px"></div>
+            <span style="font-size:12px;font-weight:800;color:#3BD269">{{ agentChip }}</span>
+          </div>
+          <sc-if value="{{ hasSkill }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:6px;background:rgba(5,17,22,0.78);border:1px solid rgba(230,242,238,0.16);border-radius:999px;padding:4px 10px 4px 5px">
+              <div class="aip2-i-doc_skill" style="width:20px;height:20px"></div>
+              <span style="font-size:12px;font-weight:800;color:#4C8DEB">{{ skillChip }}</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ hasSubs }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:6px;background:rgba(5,17,22,0.78);border:1px solid rgba(230,242,238,0.16);border-radius:999px;padding:4px 10px 4px 5px">
+              <div class="aip2-i-mini" style="width:18px;height:18px"></div>
+              <span style="font-size:12px;font-weight:800;color:#3BD269">{{ subChip }}</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ isCompress }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:6px;background:rgba(76,141,235,0.15);border:1px solid rgba(76,141,235,0.55);border-radius:999px;padding:4px 10px 4px 5px">
+              <div class="aip2-i-perk_zip" style="width:18px;height:18px"></div>
+              <span style="font-size:12px;font-weight:800;color:#4C8DEB">СЖАТИЕ</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ hasCombo }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size:12px;font-weight:800;color:#04140C;background:#3BD269;border-radius:999px;padding:5px 11px">СЕРИЯ {{ combo }}</div>
+          </sc-if>
+          <div style="display:flex;align-items:center;gap:4px;background:rgba(5,17,22,0.78);border:1px solid rgba(230,242,238,0.16);border-radius:999px;padding:6px 11px;margin-left:auto">
+            <sc-for list="{{ hSlots }}" as="h" hint-placeholder-count="5">
+              <div style="width:8px;height:8px;background:{{ h.bg }};border:1px solid {{ h.border }}"></div>
+            </sc-for>
+            <span style="font-size:11px;font-weight:800;letter-spacing:1px;color:rgba(230,242,238,0.62);margin-left:4px">ХАРНЕС</span>
+          </div>
+        </div>
+        <sc-if value="{{ bossVisible }}" hint-placeholder-val="{{ false }}">
+          <div style="background:rgba(5,17,22,0.85);border:1px solid rgba(244,87,77,0.5);border-radius:14px;padding:8px 13px 10px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline">
+              <div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#F4574D">{{ bossName }}</div>
+              <div style="font-size:11px;font-weight:700;color:rgba(230,242,238,0.55)">БОЛЕЗНЬ АГЕНТА</div>
+            </div>
+            <div style="margin-top:6px;height:6px;border-radius:3px;background:rgba(230,242,238,0.1);overflow:hidden">
+              <div style="height:100%;border-radius:3px;background:#F4574D;width:{{ bossPctW }}"></div>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ introVisible }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;left:0;right:0;top:38%;display:flex;justify-content:center;padding:0 24px">
+            <div style="background:rgba(5,17,22,0.92);border:1px solid {{ introBorder }};border-radius:20px;padding:16px 20px;display:flex;gap:16px;align-items:center;max-width:330px;animation:aip-pop .3s ease">
+              <div class="{{ introCls }}" style="width:56px;height:52px;flex-shrink:0"></div>
+              <div style="text-align:left">
+                <div style="font-size:10.5px;font-weight:800;letter-spacing:2px;color:{{ introAccent }}">{{ introSub }}</div>
+                <div style="font-family:Unbounded,sans-serif;font-size:16px;font-weight:700;margin-top:2px">{{ introTitle }}</div>
+                <div style="font-size:12.5px;font-weight:600;line-height:1.45;color:rgba(230,242,238,0.72);margin-top:4px;text-wrap:pretty">{{ introLegend }}</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isMenu }}" hint-placeholder-val="{{ true }}">
+      <div data-screen-label="Меню" style="position:absolute;inset:0;z-index:10;display:flex;flex-direction:column;background:linear-gradient(168deg, rgba(8,42,46,0.94) 0%, rgba(7,26,32,0.95) 38%, rgba(6,18,23,0.97) 100%)">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 20px 0">
+          <div style="display:flex;gap:6px;align-items:center">
+            <div style="width:12px;height:12px;border-radius:50%;background:#F2F8F5"></div>
+            <div style="width:12px;height:12px;border:2px solid #F2F8F5;box-sizing:border-box"></div>
+            <div style="width:12px;height:12px;border:2px solid #F2F8F5;border-radius:50%;box-sizing:border-box"></div>
+          </div>
+          <div style="border:1.5px solid rgba(230,242,238,0.35);border-radius:999px;padding:5px 14px;font-size:12px;font-weight:700;letter-spacing:1px;color:rgba(230,242,238,0.85)">#каквсбере</div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <div style="width:12px;height:12px;border-radius:50%;background:#3BD269"></div>
+            <div style="width:12px;height:12px;border:2px solid #3BD269;box-sizing:border-box"></div>
+            <div style="width:12px;height:12px;border:2px solid #3BD269;border-radius:50%;box-sizing:border-box"></div>
+          </div>
+        </div>
+        <div style="flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px 24px;text-align:center">
+          <div class="aip2-i-ship" style="width:72px;height:80px;animation:aip-bob 2.6s ease-in-out infinite"></div>
+          <div style="margin-top:14px;font-size:12px;font-weight:800;letter-spacing:3px;color:#3BD269">AI PDLC DISRUPT</div>
+          <h1 style="margin:8px 0 0;font-family:Unbounded,sans-serif;font-size:38px;font-weight:800;line-height:1.04;color:#F2F8F5">AI PDLC<br>RUSH</h1>
+          <div style="width:56px;height:5px;background:linear-gradient(90deg,#25AEE8,#47E87C);margin:14px auto 0"></div>
+          <div style="margin-top:14px;font-size:14px;font-weight:500;line-height:1.5;color:rgba(230,242,238,0.72);max-width:310px;text-wrap:pretty">Прокачай агента от 8K контекста до Dark Factory. Сбивай болезни агентов, собирай токены и харнес.</div>
+          <div style="width:100%;max-width:320px;margin-top:18px;text-align:left">
+            <label style="font-size:12px;font-weight:700;letter-spacing:1px;color:rgba(230,242,238,0.62)">НИК ДЛЯ ЛИДЕРБОРДА</label>
+            <input value="{{ name }}" onChange="{{ onName }}" placeholder="Введи ник" maxLength="14" style="width:100%;margin-top:6px;padding:13px 16px;border-radius:14px;border:1px solid rgba(230,242,238,0.2);background:rgba(4,12,16,0.7);color:#F2F8F5;font-family:Manrope,sans-serif;font-size:16px;font-weight:600;outline:none;box-sizing:border-box">
+          </div>
+          <button onClick="{{ onPlay }}" style="width:100%;max-width:320px;margin-top:14px;padding:17px;border-radius:999px;border:none;font-family:Manrope,sans-serif;font-size:17px;font-weight:800;letter-spacing:0.5px;color:#FFFFFF;background:linear-gradient(90deg,#25AEE8,#47E87C);cursor:pointer" style-active="transform:scale(0.97)">Играть</button>
+          <div style="display:flex;gap:10px;width:100%;max-width:320px;margin-top:10px">
+            <button onClick="{{ onDaily }}" style="flex:1;padding:13px 8px;border-radius:999px;border:1.5px solid rgba(230,242,238,0.28);background:transparent;color:#F2F8F5;font-family:Manrope,sans-serif;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap" style-active="transform:scale(0.97)" style-hover="border-color:rgba(230,242,238,0.5)">Забег дня</button>
+            <button onClick="{{ onShowLb }}" style="flex:1;padding:13px 8px;border-radius:999px;border:1.5px solid rgba(230,242,238,0.28);background:transparent;color:#F2F8F5;font-family:Manrope,sans-serif;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap" style-active="transform:scale(0.97)" style-hover="border-color:rgba(230,242,238,0.5)">Лидерборд</button>
+          </div>
+          <div style="margin-top:14px;font-size:13px;font-weight:600;color:rgba(230,242,238,0.62)">Рекорд <span style="color:#3BD269;font-weight:800">{{ bestFmt }}</span></div>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button onClick="{{ onMute }}" style="padding:8px 14px;border-radius:999px;border:1px solid {{ muteBorder }};background:transparent;color:{{ muteColor }};font-family:Manrope,sans-serif;font-size:12.5px;font-weight:700;cursor:pointer">{{ muteLabelLong }}</button>
+            <button onClick="{{ onMotion }}" style="padding:8px 14px;border-radius:999px;border:1px solid {{ motionBorder }};background:transparent;color:{{ motionColor }};font-family:Manrope,sans-serif;font-size:12.5px;font-weight:700;cursor:pointer">{{ motionLabel }}</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:0 20px 18px">
+          <div style="border:1.5px solid rgba(230,242,238,0.3);border-radius:999px;padding:5px 13px;font-size:12px;font-weight:700;color:rgba(230,242,238,0.8)">Технохаб Конф</div>
+          <div style="display:flex;align-items:center;gap:7px;border:1.5px solid rgba(230,242,238,0.3);border-radius:999px;padding:5px 13px">
+            <div style="width:7px;height:7px;border-radius:50%;background:#3BD269"></div>
+            <span style="font-size:12px;font-weight:700;color:rgba(230,242,238,0.8)">Санкт-Петербург</span>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isTutorial }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Туториал" style="position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;background:rgba(4,12,16,0.9);padding:24px">
+        <div style="width:100%;max-width:330px">
+          <h2 style="margin:0;font-family:Unbounded,sans-serif;font-size:22px;font-weight:700;text-align:center">Как играть</h2>
+          <div style="display:grid;gap:9px;margin-top:18px">
+            <div style="display:flex;align-items:center;gap:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);border-radius:16px;padding:11px 14px">
+              <div style="width:44px;height:44px;flex-shrink:0;border-radius:12px;background:rgba(4,12,16,0.8);display:flex;align-items:center;justify-content:center"><div class="aip2-i-ship" style="width:26px;height:30px"></div></div>
+              <div style="font-size:13.5px;font-weight:600;line-height:1.4">Веди пальцем — агент летит за ним и стреляет сам</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);border-radius:16px;padding:11px 14px">
+              <div style="width:44px;height:44px;flex-shrink:0;border-radius:12px;background:rgba(4,12,16,0.8);display:flex;align-items:center;justify-content:center"><div class="aip2-i-barrel" style="width:26px;height:26px"></div></div>
+              <div style="font-size:13.5px;font-weight:600;line-height:1.4">Токены — топливо и жизнь. Горят постоянно, пополняй бочонками</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);border-radius:16px;padding:11px 14px">
+              <div style="width:44px;height:44px;flex-shrink:0;border-radius:12px;background:rgba(4,12,16,0.8);display:flex;align-items:center;justify-content:center"><div class="aip2-i-doc_agent" style="width:24px;height:24px"></div></div>
+              <div style="font-size:13.5px;font-weight:600;line-height:1.4">AGENT.MD — сильнее огонь, SKILL.MD — меньше расход, SUBAGENT — напарники</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);border-radius:16px;padding:11px 14px">
+              <div style="width:44px;height:44px;flex-shrink:0;border-radius:12px;background:rgba(4,12,16,0.8);display:flex;align-items:center;justify-content:center"><div class="aip2-i-perk_win" style="width:24px;height:24px"></div></div>
+              <div style="font-size:13.5px;font-weight:600;line-height:1.4">Перки: сжатие контекста и окно от 8K до 1M токенов</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);border-radius:16px;padding:11px 14px">
+              <div style="width:44px;height:44px;flex-shrink:0;border-radius:12px;background:rgba(4,12,16,0.8);display:flex;align-items:center;justify-content:center"><div class="aip2-i-harness" style="width:24px;height:24px"></div></div>
+              <div style="font-size:13.5px;font-weight:600;line-height:1.4">Собери 5 частей харнеса с боссов — включится DARK FACTORY: судьи и очки ×2</div>
+            </div>
+          </div>
+          <button onClick="{{ onTutorialDone }}" style="width:100%;margin-top:18px;padding:17px;border-radius:999px;border:none;font-family:Manrope,sans-serif;font-size:17px;font-weight:800;color:#FFFFFF;background:linear-gradient(90deg,#25AEE8,#47E87C);cursor:pointer" style-active="transform:scale(0.97)">Понятно, поехали</button>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isCountdown }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Отсчёт" style="position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;background:rgba(4,12,16,0.55)">
+        <div key="{{ count }}" style="font-family:Unbounded,sans-serif;font-size:110px;font-weight:800;color:{{ countColor }};animation:aip-count .75s ease forwards">{{ countLabel }}</div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isGameover }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Результат" style="position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;background:rgba(4,12,16,0.9);padding:20px">
+        <div style="width:100%;max-width:330px;text-align:center">
+          <sc-if value="{{ isRecord }}" hint-placeholder-val="{{ false }}">
+            <div style="display:inline-block;font-size:12.5px;font-weight:800;letter-spacing:2px;color:#04140C;background:#F2C14E;border-radius:999px;padding:6px 16px">НОВЫЙ РЕКОРД</div>
+          </sc-if>
+          <sc-if value="{{ wonVisible }}" hint-placeholder-val="{{ false }}">
+            <div style="display:inline-block;font-size:12.5px;font-weight:800;letter-spacing:2px;color:#04140C;background:linear-gradient(90deg,#25AEE8,#47E87C);border-radius:999px;padding:6px 16px;margin:0 4px">ПАЙПЛАЙН ПРОЙДЕН</div>
+          </sc-if>
+          <sc-if value="{{ lostVisible }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size:13px;font-weight:700;letter-spacing:2px;color:rgba(230,242,238,0.62)">КОНТЕКСТ ИСЧЕРПАН</div>
+          </sc-if>
+          <div style="font-family:Unbounded,sans-serif;font-size:54px;font-weight:800;line-height:1.1;margin-top:8px;font-variant-numeric:tabular-nums">{{ displayScoreFmt }}</div>
+          <sc-if value="{{ rankVisible }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:4px;font-size:14px;font-weight:600;color:rgba(230,242,238,0.85)">место в топе <span style="color:#3BD269;font-weight:800">#{{ rankLabel }}</span></div>
+          </sc-if>
+          <sc-if value="{{ wasDark }}" hint-placeholder-val="{{ false }}">
+            <div style="display:inline-block;margin-top:8px;font-size:12px;font-weight:800;letter-spacing:1.5px;color:#F2C14E;border:1px solid rgba(242,193,78,0.5);border-radius:999px;padding:5px 13px">DARK FACTORY СОБРАНА</div>
+          </sc-if>
+          <div style="margin-top:14px;text-align:left;border:1px solid rgba(230,242,238,0.12);border-radius:14px;padding:11px 16px;display:grid;gap:6px;background:rgba(230,242,238,0.03)">
+            <div style="font-size:11px;font-weight:800;letter-spacing:2px;color:rgba(230,242,238,0.5)">ПОДСЧЁТ ОЧКОВ</div>
+            <sc-for list="{{ tallyRows }}" as="t" hint-placeholder-count="3">
+              <div style="display:flex;justify-content:space-between;gap:10px">
+                <span style="font-size:13px;font-weight:600;color:rgba(230,242,238,0.7)">{{ t.k }}</span>
+                <span style="font-size:13px;font-weight:800;color:{{ t.c }};font-variant-numeric:tabular-nums">{{ t.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 0">
+            <div style="display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);text-align:left">
+              <div class="aip2-i-bolt" style="width:18px;height:18px;flex-shrink:0"></div>
+              <div><div style="font-size:11.5px;font-weight:700;color:rgba(230,242,238,0.55)">СБИТО</div><div style="font-size:16px;font-weight:800">{{ rKills }}</div></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);text-align:left">
+              <div class="aip2-i-flag" style="width:20px;height:20px;flex-shrink:0"></div>
+              <div><div style="font-size:11.5px;font-weight:700;color:rgba(230,242,238,0.55)">ДОШЁЛ ДО</div><div style="font-size:16px;font-weight:800">{{ rStage }}</div></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);text-align:left">
+              <div class="aip2-i-harness" style="width:22px;height:22px;flex-shrink:0"></div>
+              <div><div style="font-size:11.5px;font-weight:700;color:rgba(230,242,238,0.55)">ХАРНЕС</div><div style="font-size:16px;font-weight:800">{{ rHarness }}/5</div></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:14px;background:rgba(230,242,238,0.05);border:1px solid rgba(230,242,238,0.1);text-align:left">
+              <div class="aip2-i-perk_win" style="width:22px;height:22px;flex-shrink:0"></div>
+              <div><div style="font-size:11.5px;font-weight:700;color:rgba(230,242,238,0.55)">ОКНО</div><div style="font-size:16px;font-weight:800">{{ rCap }}</div></div>
+            </div>
+          </div>
+          <sc-if value="{{ top3Hint }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:12px;font-size:13.5px;font-weight:600;padding:10px 14px;border-radius:14px;background:rgba(242,193,78,0.1);border:1px solid rgba(242,193,78,0.35);color:#F2F8F5">До топ-3 всего <span style="color:#F2C14E;font-weight:800">{{ top3Delta }}</span> очков</div>
+          </sc-if>
+          <button onClick="{{ onRetry }}" style="width:100%;margin-top:16px;padding:17px;border-radius:999px;border:none;font-family:Manrope,sans-serif;font-size:17px;font-weight:800;color:#FFFFFF;background:linear-gradient(90deg,#25AEE8,#47E87C);cursor:pointer" style-active="transform:scale(0.97)">Ещё разок</button>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button onClick="{{ onShare }}" style="flex:1;padding:12px 8px;border-radius:999px;border:1.5px solid rgba(230,242,238,0.28);background:transparent;color:#F2F8F5;font-family:Manrope,sans-serif;font-size:13.5px;font-weight:700;cursor:pointer" style-active="transform:scale(0.97)">{{ shareLabel }}</button>
+            <button onClick="{{ onShowLb }}" style="flex:1;padding:12px 8px;border-radius:999px;border:1.5px solid rgba(230,242,238,0.28);background:transparent;color:#F2F8F5;font-family:Manrope,sans-serif;font-size:13.5px;font-weight:700;cursor:pointer" style-active="transform:scale(0.97)">Топ</button>
+            <button onClick="{{ onMenu }}" style="flex:1;padding:12px 8px;border-radius:999px;border:1.5px solid rgba(230,242,238,0.28);background:transparent;color:#F2F8F5;font-family:Manrope,sans-serif;font-size:13.5px;font-weight:700;cursor:pointer" style-active="transform:scale(0.97)">Меню</button>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ showLb }}" hint-placeholder-val="{{ false }}">
+      <div data-screen-label="Лидерборд" style="position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:rgba(4,12,16,0.9);padding:20px">
+        <div style="width:100%;max-width:340px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+            <h2 style="margin:0;font-family:Unbounded,sans-serif;font-size:20px;font-weight:700">Лидерборд</h2>
+            <button onClick="{{ onCloseLb }}" style="width:38px;height:38px;border-radius:50%;border:1.5px solid rgba(230,242,238,0.28);background:transparent;color:#F2F8F5;font-size:16px;font-weight:700;cursor:pointer;font-family:Manrope,sans-serif" style-active="transform:scale(0.95)">✕</button>
+          </div>
+          <sc-if value="{{ lbEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="color:rgba(230,242,238,0.62);text-align:center;padding:36px 10px;font-size:14.5px;font-weight:600">Пока пусто. Стань первым.</div>
+          </sc-if>
+          <div style="max-height:60vh;overflow-y:auto;display:grid;gap:6px">
+            <sc-for list="{{ lbRows }}" as="e" hint-placeholder-count="0">
+              <div style="display:flex;align-items:center;gap:12px;padding:9px 14px;border-radius:14px;background:{{ e.bg }};border:1px solid {{ e.border }}">
+                <div style="width:26px;height:26px;flex-shrink:0;border-radius:50%;background:{{ e.posBg }};color:{{ e.posColor }};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800">{{ e.pos }}</div>
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:700;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.name }}</div>
+                  <div style="font-size:12px;font-weight:600;color:rgba(230,242,238,0.55)">{{ e.zone }}</div>
+                </div>
+                <div style="font-weight:800;font-size:15px;color:#3BD269;font-variant-numeric:tabular-nums">{{ e.score }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 420, &quot;height&quot;: 860}, &quot;startStage&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;Идея&quot;, &quot;Дизайн&quot;, &quot;Код&quot;, &quot;Тест&quot;, &quot;Релиз&quot;, &quot;Поддержка&quot;], &quot;default&quot;: &quot;Идея&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Превью&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: 'menu', stats: null, result: null, best: 0, count: 3,
+    showLb: false, daily: false, name: '', lb: [],
+    muted: true, reduceMotion: false, tutorialSeen: false,
+    shareBusy: false, lastRank: -1, displayScore: 0,
+  };
+
+  componentDidMount() {
+    this.saved = false;
+    this.dragging = false;
+    const s = this.loadSettings();
+    this.setState({ muted: s.muted !== false, reduceMotion: !!s.reduceMotion, tutorialSeen: !!s.tutorialSeen, name: s.name || '', best: this.loadBest(), lb: this.loadLb() });
+    const boot = () => {
+      if (!window.Rush2 || !this.canvasEl || !this.frameEl) { this.bootT = setTimeout(boot, 60); return; }
+      this.initGame();
+    };
+    boot();
+    this.keyHandler = (e) => {
+      const eng = this.engine;
+      if (!eng || this.state.screen !== 'playing') return;
+      const st = 34;
+      if (e.key === 'ArrowLeft' || e.key === 'a') eng.nudge(-st, 0);
+      else if (e.key === 'ArrowRight' || e.key === 'd') eng.nudge(st, 0);
+      else if (e.key === 'ArrowUp' || e.key === 'w') { e.preventDefault(); eng.nudge(0, -st); }
+      else if (e.key === 'ArrowDown' || e.key === 's') eng.nudge(0, st);
+    };
+    window.addEventListener('keydown', this.keyHandler);
+    this.visHandler = () => { if (!this.engine) return; if (document.hidden) this.engine.pause(); else this.engine.resumeLoop(); };
+    document.addEventListener('visibilitychange', this.visHandler);
+  }
+  componentWillUnmount() {
+    clearTimeout(this.bootT); clearInterval(this.cdTimer);
+    if (this.scoreRaf) cancelAnimationFrame(this.scoreRaf);
+    window.removeEventListener('keydown', this.keyHandler);
+    document.removeEventListener('visibilitychange', this.visHandler);
+    if (this.ro) this.ro.disconnect();
+    if (this.engine) this.engine.stop();
+  }
+
+  initGame() {
+    const R = window.Rush2;
+    const icons = {};
+    ['ship', 'mini', 'barrel', 'doc_agent', 'doc_skill', 'perk_zip', 'perk_win', 'harness', 'olddev', 'slop1', 'legacy', 'hallu', 'loop1', 'rot', 'bolt', 'flag'].forEach((n) => { icons[n] = R.spriteURL(n, 6); });
+    let css = '';
+    Object.keys(icons).forEach((n) => { css += '.aip2-i-' + n + '{background-image:url("' + icons[n] + '")}'; });
+    let tag = document.getElementById('aip2-icons');
+    if (!tag) { tag = document.createElement('style'); tag.id = 'aip2-icons'; document.head.appendChild(tag); }
+    tag.textContent = css;
+    const eng = new R.Engine(this.canvasEl);
+    this.engine = eng;
+    eng.setBest(this.state.best);
+    eng.setMuted(this.state.muted);
+    eng.setReduceMotion(this.state.reduceMotion);
+    this.applyProps();
+    eng.onStats = (st) => this.setState({ stats: st });
+    eng.onGameOver = (r) => this.handleGameOver(r);
+    this.ro = new ResizeObserver(() => {
+      const rect = this.frameEl.getBoundingClientRect();
+      eng.resize(rect.width, rect.height, Math.min(2, window.devicePixelRatio || 1));
+    });
+    this.ro.observe(this.frameEl);
+  }
+  applyProps() {
+    if (!this.engine || !window.Rush2) return;
+    const si = Math.max(0, window.Rush2.STAGES.findIndex((z) => z.name === (this.props.startStage || 'Идея')));
+    this.engine.setStartStage(si);
+  }
+  componentDidUpdate(prevProps) {
+    if (prevProps.startStage !== this.props.startStage) this.applyProps();
+  }
+
+  loadSettings() { try { return JSON.parse(localStorage.getItem('aip3_set') || '{}'); } catch (e) { return {}; } }
+  saveSettings(patch) { const s = Object.assign(this.loadSettings(), patch); localStorage.setItem('aip3_set', JSON.stringify(s)); return s; }
+  loadBest() { return Number(localStorage.getItem('aip3_best') || 0); }
+  saveBest(v) { const b = Math.max(this.loadBest(), v); localStorage.setItem('aip3_best', String(b)); return b; }
+  loadLb() { try { return JSON.parse(localStorage.getItem('aip3_lb') || '[]'); } catch (e) { return []; } }
+  addScoreEntry(e) {
+    const lb = this.loadLb(); lb.push(e);
+    lb.sort((a, b) => b.score - a.score);
+    const top = lb.slice(0, 50);
+    localStorage.setItem('aip3_lb', JSON.stringify(top));
+    return top;
+  }
+
+  handleGameOver(r) {
+    if (this.saved) return;
+    this.saved = true;
+    const best = this.saveBest(r.score);
+    const name = (this.state.name || 'Гость').slice(0, 14);
+    const lb = this.addScoreEntry({ name, score: r.score, zone: r.stageName, date: Date.now() });
+    const rank = lb.findIndex((e) => e.score === r.score && e.name === name);
+    this.setState({ result: r, best, lb, lastRank: rank, screen: 'gameover', displayScore: 0 });
+    this.engine.setBest(best);
+    const start = performance.now(), dur = 900;
+    const tick = (t) => {
+      const p = Math.min(1, (t - start) / dur);
+      this.setState({ displayScore: Math.floor(r.score * (1 - Math.pow(1 - p, 3))) });
+      if (p < 1) this.scoreRaf = requestAnimationFrame(tick);
+    };
+    this.scoreRaf = requestAnimationFrame(tick);
+  }
+  beginCountdown(daily) {
+    if (!this.engine) return;
+    this.engine.audio.resume();
+    this.saved = false;
+    this.setState({ daily, result: null, count: 3, screen: 'countdown', showLb: false });
+    this.engine.audio.countdownTick(false);
+    let n = 3;
+    clearInterval(this.cdTimer);
+    this.cdTimer = setInterval(() => {
+      n -= 1;
+      if (n > 0) { this.setState({ count: n }); this.engine.audio.countdownTick(false); }
+      else if (n === 0) { this.setState({ count: 0 }); this.engine.audio.countdownTick(true); }
+      else {
+        clearInterval(this.cdTimer);
+        const seed = this.state.daily ? Number(new Date().toISOString().slice(0, 10).replace(/-/g, '')) : Math.floor(Math.random() * 1e9);
+        this.setState({ screen: 'playing' });
+        this.engine.start(seed);
+      }
+    }, 750);
+  }
+
+  toLocal(e) {
+    const rect = this.frameEl.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+  handlePointerDown = (e) => {
+    this.dragging = true;
+    if (this.engine && this.state.screen === 'playing') {
+      const p = this.toLocal(e);
+      this.engine.setTarget(p.x, p.y - 40);
+    }
+  };
+  handlePointerMove = (e) => {
+    if (!this.dragging || !this.engine || this.state.screen !== 'playing') return;
+    const p = this.toLocal(e);
+    this.engine.setTarget(p.x, p.y - 40);
+  };
+  handlePointerUp = () => { this.dragging = false; };
+
+  async buildShareCard(r, name, rank) {
+    await document.fonts.ready;
+    const W = 600, H = 800;
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#07171D'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(230,242,238,0.35)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(W / 2 - 150, 52, 300, 40, 20); ctx.stroke();
+    ctx.fillStyle = 'rgba(230,242,238,0.85)';
+    ctx.font = '700 15px Manrope, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('AI PDLC DISRUPT · ТЕХНОХАБ КОНФ', W / 2, 73);
+    ctx.fillStyle = '#F2F8F5';
+    ctx.font = '800 52px Unbounded, sans-serif';
+    ctx.fillText('AI PDLC RUSH', W / 2, 150);
+    const grad = ctx.createLinearGradient(W / 2 - 28, 0, W / 2 + 28, 0);
+    grad.addColorStop(0, '#25AEE8'); grad.addColorStop(1, '#47E87C');
+    ctx.fillStyle = grad; ctx.fillRect(W / 2 - 28, 185, 56, 5);
+    ctx.font = '700 24px Manrope, sans-serif'; ctx.fillStyle = '#F2F8F5';
+    ctx.fillText(name, W / 2, 250);
+    ctx.font = '800 104px Unbounded, sans-serif'; ctx.fillStyle = '#3BD269';
+    ctx.fillText(r.score.toLocaleString('ru-RU'), W / 2, 360);
+    ctx.font = '700 16px Manrope, sans-serif'; ctx.fillStyle = 'rgba(230,242,238,0.62)';
+    ctx.fillText('ОЧКОВ', W / 2, 425);
+    const rows = [['Сбито врагов', String(r.kills)], ['Дошёл до', r.stageName], ['Харнес', r.harness + '/5'], ['Контекстное окно', r.capLabel]];
+    ctx.font = '700 22px Manrope, sans-serif';
+    let y = 520;
+    for (const [k, v] of rows) {
+      ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(230,242,238,0.62)'; ctx.fillText(k, 90, y);
+      ctx.textAlign = 'right'; ctx.fillStyle = '#F2F8F5'; ctx.fillText(v, W - 90, y);
+      y += 44;
+    }
+    if (r.darkFactory) {
+      ctx.textAlign = 'center'; ctx.fillStyle = '#F2C14E';
+      ctx.font = '800 26px Manrope, sans-serif';
+      ctx.fillText('DARK FACTORY СОБРАНА', W / 2, y + 16);
+      y += 50;
+    }
+    if (rank >= 0 && rank < 50) {
+      ctx.textAlign = 'center'; ctx.fillStyle = '#F2C14E';
+      ctx.font = '800 26px Manrope, sans-serif';
+      ctx.fillText(`МЕСТО #${rank + 1}`, W / 2, y + 16);
+    }
+    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(230,242,238,0.5)';
+    ctx.font = '600 17px Manrope, sans-serif';
+    ctx.fillText('#каквсбере · обгони меня', W / 2, H - 40);
+    return new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('blob'))), 'image/png'));
+  }
+
+  renderVals() {
+    const st = this.state;
+    const s = st.stats || {};
+    const fmt = (n) => (n || 0).toLocaleString('ru-RU');
+    const pct = s.tokenPct == null ? 1 : s.tokenPct;
+    const tokColor = pct > 0.4 ? '#3BD269' : pct > 0.2 ? '#F2C14E' : '#F4574D';
+    const r = st.result || {};
+    const lb = st.lb || [];
+    const isRecord = r.score != null && r.score >= st.best && r.score > 0;
+    let top3Delta = null;
+    if (r.score != null && lb.length >= 3 && r.score < lb[2].score) top3Delta = lb[2].score - r.score + 1;
+    const lbRows = lb.map((e, i) => ({
+      pos: String(i + 1), name: e.name, zone: e.zone || '', score: fmt(e.score),
+      bg: i < 3 ? 'rgba(33,160,56,0.12)' : 'rgba(230,242,238,0.05)',
+      border: i < 3 ? 'rgba(59,210,105,0.45)' : 'rgba(230,242,238,0.1)',
+      posBg: i < 3 ? '#21A038' : 'rgba(230,242,238,0.1)',
+      posColor: i < 3 ? '#FFFFFF' : 'rgba(230,242,238,0.72)',
+    }));
+    const harness = s.harness || [];
+    const hSlots = [0, 1, 2, 3, 4].map((i) => ({
+      bg: i < harness.length ? '#F2C14E' : 'rgba(230,242,238,0.08)',
+      border: i < harness.length ? '#F2C14E' : 'rgba(230,242,238,0.25)',
+    }));
+    const intro = s.intro;
+    const sprMap = { olddev: 'olddev', slop: 'slop1', legacy: 'legacy', hallu: 'hallu', loop: 'loop1', rot: 'rot', ship: 'ship' };
+    return {
+      setFrame: (el) => { this.frameEl = el; },
+      setCanvas: (el) => { this.canvasEl = el; },
+      onPointerDown: this.handlePointerDown,
+      onPointerMove: this.handlePointerMove,
+      onPointerUp: this.handlePointerUp,
+      isMenu: st.screen === 'menu', isTutorial: st.screen === 'tutorial',
+      isCountdown: st.screen === 'countdown', isPlaying: st.screen === 'playing',
+      isGameover: st.screen === 'gameover',
+      showLb: st.showLb, lbEmpty: lb.length === 0, lbRows,
+      scoreFmt: fmt(s.score), bestFmt: fmt(st.best),
+      stageName: s.stageName || 'Идея', stageAccent: s.stageAccent || '#E3C24E',
+      lapText: s.lap || false, isDark: !!s.darkFactory,
+      capLabel: s.capLabel || '8K',
+      tokensFmt: fmt(s.tokens == null ? 8000 : s.tokens),
+      tokenBarW: Math.round(pct * 100) + '%', tokColor,
+      agentChip: 'ОГОНЬ ур.' + (s.agentLvl || 1),
+      hasSkill: (s.skillLvl || 0) > 0,
+      skillChip: 'РАСХОД −' + (100 - Math.round(Math.pow(0.85, s.skillLvl || 0) * 100)) + '%',
+      hasSubs: (s.subs || 0) > 0, subChip: 'SUB ×' + (s.subs || 0),
+      isCompress: !!s.compress,
+      hasCombo: (s.combo || 0) >= 5, combo: s.combo || 0,
+      hSlots,
+      bossVisible: !!s.boss, bossName: s.boss ? s.boss.name : '',
+      bossPctW: s.boss ? Math.round(s.boss.pct * 100) + '%' : '0%',
+      introVisible: !!intro,
+      introTitle: intro ? intro.title : '', introSub: intro ? intro.sub : '',
+      introLegend: intro ? intro.legend : '',
+      introCls: 'aip2-i-' + (intro ? sprMap[intro.sprite] || 'ship' : 'ship'),
+      introAccent: intro && intro.kind === 'boss' ? '#F4574D' : intro && (intro.kind === 'dark' || intro.kind === 'clear') ? '#F2C14E' : (s.stageAccent || '#E3C24E'),
+      introBorder: intro && intro.kind === 'boss' ? 'rgba(244,87,77,0.55)' : 'rgba(230,242,238,0.18)',
+      muteLabel: st.muted ? 'ВЫКЛ' : 'ЗВУК',
+      muteLabelLong: st.muted ? 'Звук: выкл' : 'Звук: вкл',
+      muteColor: st.muted ? 'rgba(230,242,238,0.5)' : '#3BD269',
+      muteBorder: st.muted ? 'rgba(230,242,238,0.25)' : 'rgba(59,210,105,0.5)',
+      motionLabel: st.reduceMotion ? 'Эффекты: меньше' : 'Эффекты: вкл',
+      motionColor: st.reduceMotion ? 'rgba(230,242,238,0.5)' : '#3BD269',
+      motionBorder: st.reduceMotion ? 'rgba(230,242,238,0.25)' : 'rgba(59,210,105,0.5)',
+      name: st.name,
+      count: st.count,
+      countLabel: st.count === 0 ? 'GO' : String(st.count),
+      countColor: st.count === 0 ? '#3BD269' : '#F2F8F5',
+      isRecord,
+      wonVisible: !!r.won,
+      lostVisible: r.score != null && !r.won,
+      tallyRows: r.score == null ? [] : [
+        { k: 'Очки за забег', v: fmt(r.base), c: '#F2F8F5' },
+        { k: 'Остаток контекста', v: '+' + fmt(r.tokenBonus), c: '#3BD269' },
+        { k: 'Харнес ' + (r.harness || 0) + '/5', v: '+' + fmt(r.harnessBonus), c: '#F2C14E' },
+      ].concat(r.victoryBonus ? [{ k: 'Бонус за финал', v: '+' + fmt(r.victoryBonus), c: '#F2C14E' }] : []),
+      displayScoreFmt: fmt(st.displayScore),
+      rankVisible: st.lastRank >= 0 && st.lastRank < 50,
+      rankLabel: st.lastRank + 1,
+      wasDark: !!r.darkFactory,
+      rKills: r.kills || 0, rStage: r.stageName || '', rHarness: r.harness || 0, rCap: r.capLabel || '8K',
+      top3Hint: top3Delta != null, top3Delta: top3Delta == null ? '' : fmt(top3Delta),
+      shareLabel: st.shareBusy ? '…' : 'Поделиться',
+      onName: (e) => {
+        const clean = e.target.value.slice(0, 14);
+        this.saveSettings({ name: clean });
+        this.setState({ name: clean });
+      },
+      onPlay: () => { if (!this.state.tutorialSeen) this.setState({ screen: 'tutorial', daily: false }); else this.beginCountdown(false); },
+      onDaily: () => { if (!this.state.tutorialSeen) this.setState({ screen: 'tutorial', daily: true }); else this.beginCountdown(true); },
+      onTutorialDone: () => { this.saveSettings({ tutorialSeen: true }); this.setState({ tutorialSeen: true }); this.beginCountdown(this.state.daily); },
+      onRetry: () => this.beginCountdown(this.state.daily),
+      onMenu: () => { this.setState({ screen: 'menu' }); if (this.engine) this.engine.renderStatic(); },
+      onShowLb: () => this.setState({ showLb: true, lb: this.loadLb() }),
+      onCloseLb: () => this.setState({ showLb: false }),
+      onMute: () => {
+        const m = !this.state.muted;
+        this.saveSettings({ muted: m });
+        this.setState({ muted: m });
+        if (this.engine) this.engine.setMuted(m);
+      },
+      onMotion: () => {
+        const v = !this.state.reduceMotion;
+        this.saveSettings({ reduceMotion: v });
+        this.setState({ reduceMotion: v });
+        if (this.engine) this.engine.setReduceMotion(v);
+      },
+      onShare: async () => {
+        if (!this.state.result || this.state.shareBusy) return;
+        this.setState({ shareBusy: true });
+        try {
+          const blob = await this.buildShareCard(this.state.result, this.state.name || 'Гость', this.state.lastRank);
+          const file = new File([blob], 'ai-pdlc-rush.png', { type: 'image/png' });
+          if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'AI PDLC RUSH', text: `Мой результат: ${(this.state.result.score || 0).toLocaleString('ru-RU')} очков. #каквсбере` });
+          } else {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'ai-pdlc-rush.png'; a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+          }
+        } catch (e) { /* отменено */ } finally { this.setState({ shareBusy: false }); }
+      },
+    };
+  }
+}
+</script>
+</body>
+</html>
