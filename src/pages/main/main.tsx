@@ -52,7 +52,6 @@ export const MainPage: React.FC = () => {
   const [lastRank, setLastRank] = useState(-1)
   const [nameInput, setNameInput] = useState(settings.name)
   const [displayScore, setDisplayScore] = useState(0)
-  const [shareBusy, setShareBusy] = useState(false)
   const savedRef = useRef(false)
   const scoreRaf = useRef(0)
 
@@ -156,37 +155,6 @@ export const MainPage: React.FC = () => {
     setSettings(saveSettings({ name: clean }))
   }, [])
 
-  const doShare = useCallback(async () => {
-    if (!result || shareBusy) return
-    setShareBusy(true)
-    try {
-      const blob = await buildShareCard(result, getSettings().name || 'Гость', lastRank)
-      const file = new File([blob], 'ai-pdlc-rush.png', { type: 'image/png' })
-      const navAny = navigator as Navigator & {
-        canShare?: (d: unknown) => boolean
-        share?: (d: unknown) => Promise<void>
-      }
-      if (navAny.share && navAny.canShare && navAny.canShare({ files: [file] })) {
-        await navAny.share({
-          files: [file],
-          title: 'AI PDLC RUSH',
-          text: `Мой результат: ${fmt(result.score)} очков. #каквсбере`,
-        })
-      } else {
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = 'ai-pdlc-rush.png'
-        a.click()
-        setTimeout(() => URL.revokeObjectURL(url), 2000)
-      }
-    } catch {
-      /* отменено */
-    } finally {
-      setShareBusy(false)
-    }
-  }, [result, shareBusy, lastRank])
-
   const top3Delta = useMemo(() => {
     if (!result) return null
     const lb = getLeaderboard()
@@ -260,8 +228,6 @@ export const MainPage: React.FC = () => {
               setScreen('menu')
               controls.current?.renderStatic()
             }}
-            onShare={doShare}
-            shareBusy={shareBusy}
           />
         )}
       </div>
@@ -510,10 +476,8 @@ interface GameOverProps {
   top3Delta: number | null
   onRetry: () => void
   onMenu: () => void
-  onShare: () => void
-  shareBusy: boolean
 }
-const GameOver: React.FC<GameOverProps> = ({ result, best, rank, displayScore, top3Delta, onRetry, onMenu, onShare, shareBusy }) => {
+const GameOver: React.FC<GameOverProps> = ({ result, best, rank, displayScore, top3Delta, onRetry, onMenu }) => {
   const isRecord = result.score >= best && result.score > 0
   const tally: Array<{ k: string; v: string; c: string }> = [
     { k: 'Очки за забег', v: fmt(result.base), c: C.ink },
@@ -565,9 +529,8 @@ const GameOver: React.FC<GameOverProps> = ({ result, best, rank, displayScore, t
         )}
 
         <PrimaryButton onClick={onRetry} label="Ещё разок" full />
-        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-          <GhostButton onClick={onShare} label={shareBusy ? '…' : 'Поделиться'} />
-          <GhostButton onClick={onMenu} label="Меню" />
+        <div style={{ marginTop: 10 }}>
+          <GhostButton onClick={onMenu} label="Меню" full />
         </div>
       </div>
     </div>
@@ -599,11 +562,11 @@ const PrimaryButton: React.FC<{ onClick: () => void; label: string; full?: boole
   </button>
 )
 
-const GhostButton: React.FC<{ onClick: () => void; label: string }> = ({ onClick, label }) => (
+const GhostButton: React.FC<{ onClick: () => void; label: string; full?: boolean }> = ({ onClick, label, full }) => (
   <button
     onClick={onClick}
     className="aip-btn"
-    style={{ flex: 1, padding: '13px 8px', borderRadius: 999, border: '1.5px solid rgba(230,242,238,0.28)', background: 'transparent', color: C.ink, fontFamily: FONT, fontSize: 14, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}
+    style={{ flex: full ? undefined : 1, width: full ? '100%' : undefined, padding: '13px 8px', borderRadius: 999, border: '1.5px solid rgba(230,242,238,0.28)', background: 'transparent', color: C.ink, fontFamily: FONT, fontSize: 14, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}
   >
     {label}
   </button>
@@ -618,85 +581,5 @@ const Pill: React.FC<{ active: boolean; label: string; onClick: () => void }> = 
     {label}
   </button>
 )
-
-// ---------- Шер-карточка ----------
-const buildShareCard = async (r: GameResult, name: string, rank: number): Promise<Blob> => {
-  try {
-    await (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready
-  } catch {
-    /* ignore */
-  }
-  const W = 600
-  const H = 800
-  const cv = document.createElement('canvas')
-  cv.width = W
-  cv.height = H
-  const ctx = cv.getContext('2d')
-  if (!ctx) throw new Error('no ctx')
-  ctx.fillStyle = '#07171D'
-  ctx.fillRect(0, 0, W, H)
-  ctx.strokeStyle = 'rgba(230,242,238,0.35)'
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  ;(ctx as CanvasRenderingContext2D & { roundRect?: (x: number, y: number, w: number, h: number, r: number) => void }).roundRect?.(W / 2 - 150, 52, 300, 40, 20)
-  ctx.stroke()
-  ctx.fillStyle = 'rgba(230,242,238,0.85)'
-  ctx.font = '700 15px Manrope, sans-serif'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText('AI PDLC DISRUPT · ТЕХНОХАБ КОНФ', W / 2, 73)
-  ctx.fillStyle = '#F2F8F5'
-  ctx.font = '800 52px Unbounded, Manrope, sans-serif'
-  ctx.fillText('AI PDLC RUSH', W / 2, 150)
-  const grad = ctx.createLinearGradient(W / 2 - 28, 0, W / 2 + 28, 0)
-  grad.addColorStop(0, C.cyan)
-  grad.addColorStop(1, C.bright)
-  ctx.fillStyle = grad
-  ctx.fillRect(W / 2 - 28, 185, 56, 5)
-  ctx.font = '700 24px Manrope, sans-serif'
-  ctx.fillStyle = '#F2F8F5'
-  ctx.fillText(name, W / 2, 250)
-  ctx.font = '800 104px Unbounded, Manrope, sans-serif'
-  ctx.fillStyle = C.bright
-  ctx.fillText(r.score.toLocaleString('ru-RU'), W / 2, 360)
-  ctx.font = '700 16px Manrope, sans-serif'
-  ctx.fillStyle = 'rgba(230,242,238,0.62)'
-  ctx.fillText('ОЧКОВ', W / 2, 425)
-  const rows: Array<[string, string]> = [
-    ['Сбито врагов', String(r.kills)],
-    ['Дошёл до', r.stageName],
-    ['Харнес', `${r.harness}/5`],
-    ['Контекстное окно', r.capLabel],
-  ]
-  ctx.font = '700 22px Manrope, sans-serif'
-  let y = 520
-  for (const [k, v] of rows) {
-    ctx.textAlign = 'left'
-    ctx.fillStyle = 'rgba(230,242,238,0.62)'
-    ctx.fillText(k, 90, y)
-    ctx.textAlign = 'right'
-    ctx.fillStyle = '#F2F8F5'
-    ctx.fillText(v, W - 90, y)
-    y += 44
-  }
-  if (r.darkFactory) {
-    ctx.textAlign = 'center'
-    ctx.fillStyle = C.gold
-    ctx.font = '800 26px Manrope, sans-serif'
-    ctx.fillText('DARK FACTORY СОБРАНА', W / 2, y + 16)
-    y += 50
-  }
-  if (rank >= 0 && rank < 50) {
-    ctx.textAlign = 'center'
-    ctx.fillStyle = C.gold
-    ctx.font = '800 26px Manrope, sans-serif'
-    ctx.fillText(`МЕСТО #${rank + 1}`, W / 2, y + 16)
-  }
-  ctx.textAlign = 'center'
-  ctx.fillStyle = 'rgba(230,242,238,0.5)'
-  ctx.font = '600 17px Manrope, sans-serif'
-  ctx.fillText('#каквсбере · обгони меня', W / 2, H - 40)
-  return new Promise<Blob>((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('blob'))), 'image/png'))
-}
 
 export default MainPage

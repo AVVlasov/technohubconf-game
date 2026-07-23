@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  BARREL_KILL_CHANCE,
   BARREL_REFILL_PCT,
   WAVE_DURATION,
   applyPickup,
+  barrelCountForStage,
+  barrelKillChance,
   bossHp,
   enemyHpMult,
   expectedPowerAtStageStart,
@@ -102,19 +103,27 @@ describe('mid-stage pressure and recovery', () => {
 })
 
 describe('enemy armor tracks player power', () => {
-  it('рост DPS между этапами не опережает рост брони', () => {
-    for (let stage = 1; stage < 6; stage++) {
+  it('рост DPS между этапами не опережает рост брони (до Релиза)', () => {
+    for (let stage = 1; stage < 4; stage++) {
       const prevDps = playerDps(expectedPowerAtStageStart(stage - 1))
       const nextDps = playerDps(expectedPowerAtStageStart(stage))
       const dpsGrowth = nextDps / prevDps
       const armorGrowth = enemyHpMult(stage) / enemyHpMult(stage - 1)
-      // броня покрывает усиление огня (с запасом ≥ усиления)
       expect(armorGrowth, `stage ${stage} armor vs dps`).toBeGreaterThanOrEqual(dpsGrowth * 0.95)
     }
   })
 
-  it('финальный этап заметно толще первого', () => {
-    expect(enemyHpMult(5) / enemyHpMult(0)).toBeGreaterThan(2.5)
+  it('на Релизе и Поддержке броня растёт слабее мощи', () => {
+    const dps34 =
+      playerDps(expectedPowerAtStageStart(4)) / playerDps(expectedPowerAtStageStart(3))
+    const dps45 =
+      playerDps(expectedPowerAtStageStart(5)) / playerDps(expectedPowerAtStageStart(4))
+    expect(enemyHpMult(4) / enemyHpMult(3)).toBeLessThan(dps34)
+    expect(enemyHpMult(5) / enemyHpMult(4)).toBeLessThanOrEqual(Math.max(dps45, 1.15))
+  })
+
+  it('финальный этап всё ещё заметно толще первого', () => {
+    expect(enemyHpMult(5) / enemyHpMult(0)).toBeGreaterThan(2.2)
   })
 })
 
@@ -131,9 +140,19 @@ describe('boss is stage peak', () => {
   })
 })
 
-describe('barrel economy −5%', () => {
-  it('шанс и рефилл урезаны на 5% от прежних значений', () => {
-    expect(BARREL_KILL_CHANCE).toBeCloseTo(0.171, 5)
-    expect(BARREL_REFILL_PCT).toBeCloseTo(0.133, 5)
+describe('barrel economy toward finale', () => {
+  it('бочка даёт заметную долю окна', () => {
+    expect(BARREL_REFILL_PCT).toBeGreaterThanOrEqual(0.18)
+  })
+
+  it('к Тесту и финалу больше плановых бочек', () => {
+    expect(barrelCountForStage(0)).toBeGreaterThanOrEqual(2)
+    expect(barrelCountForStage(3)).toBeGreaterThan(barrelCountForStage(1))
+    expect(barrelCountForStage(5)).toBeGreaterThanOrEqual(barrelCountForStage(3))
+  })
+
+  it('шанс дропа с убийства растёт к финалу', () => {
+    expect(barrelKillChance(5)).toBeGreaterThan(barrelKillChance(0))
+    expect(barrelKillChance(3)).toBeGreaterThan(barrelKillChance(1))
   })
 })

@@ -28,19 +28,38 @@ export const MAX_SUBS = 2
 
 const BASE_POWER: PowerState = { agentLvl: 1, skillLvl: 0, subs: 0 }
 
-/** Шанс бочки с убийства (−5% к прошлому 0.18). */
-export const BARREL_KILL_CHANCE = 0.18 * 0.95
+/** Шанс бочки с убийства — выше к финалу (этапы Тест+). */
+export function barrelKillChance(stageIdx: number): number {
+  if (stageIdx >= 5) return 0.28
+  if (stageIdx >= 3) return 0.24
+  if (stageIdx >= 1) return 0.19
+  return 0.17
+}
 
-/** Доля окна токенов с бочки (−5% к прошлому 0.14). */
-export const BARREL_REFILL_PCT = 0.14 * 0.95
+/** Доля окна токенов с бочки — щедрее, чтобы хватало до финала. */
+export const BARREL_REFILL_PCT = 0.2
 
-/** Рефилл после босса (−5% к прошлому 0.28). */
-export const STAGE_CLEAR_REFILL_PCT = 0.28 * 0.95
+/** Рефилл после босса. */
+export const STAGE_CLEAR_REFILL_PCT = 0.36
 
-/** Сколько плановых бочек на этап (этап 0 чуть щедрее — обучение). */
+/** Сколько плановых бочек на этап — к финалу заметно больше. */
 export function barrelCountForStage(stageIdx: number): number {
   if (stageIdx === 0) return 3
-  return 2
+  if (stageIdx === 1) return 2
+  if (stageIdx === 2) return 3
+  if (stageIdx === 3) return 4 // Тест — здесь раньше кончались токены
+  if (stageIdx === 4) return 5
+  return 5 // Поддержка
+}
+
+/** Моменты спавна плановых бочек (сек волны). */
+export function barrelDropTimes(stageIdx: number): number[] {
+  const n = barrelCountForStage(stageIdx)
+  if (stageIdx === 0) return [2.5, 10, 19].slice(0, n)
+  if (stageIdx <= 2) return [4, 12, 19].slice(0, n)
+  // Тест+ : чаще и ближе к боссу
+  const late = [3, 7, 12, 16, 20, 22]
+  return late.slice(0, n)
 }
 
 export function fireRate(p: PowerState): number {
@@ -131,12 +150,14 @@ export function powerMissingLastUpgrade(stageIdx: number): PowerState {
 /**
  * Множитель HP врагов: растёт с ожидаемым DPS игрока к старту этапа,
  * плюс лёгкий «панцирь» самого этапа, чтобы новая мощь не тащила соло.
+ * На Релизе/Поддержке панцирь чуть ослаблен — к финалу не хватает мощности оружия.
  */
 export function enemyHpMult(stageIdx: number): number {
   const expected = playerDps(expectedPowerAtStageStart(stageIdx))
   const fromPower = expected / baselineDps()
-  // панцирь этапа чуть обгоняет рост DPS — без свежего апгрейда станет тесно
-  const stageArmor = 1 + stageIdx * 0.18
+  let stageArmor = 1 + stageIdx * 0.18
+  if (stageIdx === 4) stageArmor *= 0.82 // Релиз — чуть тоньше
+  if (stageIdx >= 5) stageArmor *= 0.72 // Поддержка — ещё легче пробивать
   return fromPower * stageArmor
 }
 
@@ -202,10 +223,8 @@ export function bossShootCd(stageIdx: number): number {
 /** План дропов этапа: бочки + ровно 1 апгрейд + 1 саб/замена. */
 export function stageDropPlan(stageIdx: number, power: PowerState): StageDrop[] {
   const drops: StageDrop[] = []
-  const barrels = barrelCountForStage(stageIdx)
-  const barrelTimes = stageIdx === 0 ? [2.5, 10, 19] : [5, 17]
-  for (let i = 0; i < barrels; i++) {
-    drops.push({ t: barrelTimes[i] ?? 6 + i * 6, kind: 'barrel' })
+  for (const t of barrelDropTimes(stageIdx)) {
+    drops.push({ t, kind: 'barrel' })
   }
 
   const upgrade = stageUpgradeKind(stageIdx, power)

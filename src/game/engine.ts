@@ -4,10 +4,10 @@
 
 import { GameAudio } from './audio'
 import {
-  BARREL_KILL_CHANCE,
   BARREL_REFILL_PCT,
   STAGE_CLEAR_REFILL_PCT,
   WAVE_DURATION,
+  barrelKillChance,
   bossHp,
   bossShootCd,
   enemyHp,
@@ -434,8 +434,9 @@ export class Engine {
     this.py2 += (this.ty - this.py2) * lerp
 
     const hell = this.hell()
+    // к финалу burn растёт мягче — иначе токены кончаются на Тесте+
     let burn =
-      160 * (1 + this.stageIdx * 0.1 + hell * 0.45 + this.lap * 0.4) * Math.pow(0.85, this.skillLvl)
+      150 * (1 + this.stageIdx * 0.07 + hell * 0.28 + this.lap * 0.35) * Math.pow(0.85, this.skillLvl)
     if (this.compressT > 0) burn *= 0.55
     let aura = false
     if (this.stage.enemy === 'rot' || this.enemies.some((e) => e.kind === 'rot')) {
@@ -1074,7 +1075,7 @@ export class Engine {
             muzzle: 0,
           })
       }
-      if (this.rng() < BARREL_KILL_CHANCE) this.spawnPickup('barrel', e.x, e.y)
+      if (this.rng() < barrelKillChance(this.stageIdx)) this.spawnPickup('barrel', e.x, e.y)
     }
   }
 
@@ -1099,6 +1100,10 @@ export class Engine {
       if (this.harness.length < 5) this.spawnPickup('harness', b.x, b.y)
       this.spawnPickup('barrel', b.x - 30 * this.unit, b.y)
       this.spawnPickup('barrel', b.x + 30 * this.unit, b.y)
+      if (this.stageIdx >= 3) {
+        this.spawnPickup('barrel', b.x, b.y + 28 * this.unit)
+        this.spawnPickup('barrel', b.x, b.y - 24 * this.unit)
+      }
       if (this.stageIdx % 2 === 1) this.spawnPickup('perk_win', b.x, b.y - 20 * this.unit)
       this.phase = 'clear'
       this.phaseT = 2.4
