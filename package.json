@@ -1,0 +1,47 @@
+{
+    "name": "technohubconf-game",
+    "version": "0.0.0",
+    "description": "",
+    "main": "./src/index.tsx",
+    "scripts": {
+        "test": "exit 0",
+        "start": "brojs server --port=8099 --with-open-browser",
+        "build": "npm run clean && brojs build --dev",
+        "build:prod": "npm run clean && brojs build",
+        "clean": "rimraf dist",
+        "compile": "brojs compile",
+        "prom": "npm run compile && brojs prom-server --port=8099",
+        "eslint": "npx eslint ./src/**/*",
+        "eslint:fix": "npx eslint ./src/**/* --fix"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/AVVlasov/technohubconf-game.git"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "type": "commonjs",
+    "bugs": {
+        "url": "https://github.com/AVVlasov/technohubconf-game/issues"
+    },
+    "homepage": "https://github.com/AVVlasov/technohubconf-game#readme",
+    "dependencies": {
+        "@brojs/cli": "^2.0.0",
+        "@chakra-ui/react": "^3.2.0",
+        "@emotion/react": "^11.13.5",
+        "@eslint/js": "^9.11.0",
+        "@stylistic/eslint-plugin": "^2.8.0",
+        "@types/node": "^22.20.1",
+        "@types/react": "^18.3.12",
+        "@types/react-dom": "^18.3.1",
+        "eslint": "^9.11.0",
+        "eslint-plugin-react": "^7.36.1",
+        "express": "^4.19.2",
+        "globals": "^15.9.0",
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1",
+        "react-router-dom": "^6.23.1",
+        "typescript-eslint": "^8.6.0"
+    }
+}
